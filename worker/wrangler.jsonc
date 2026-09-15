@@ -1,0 +1,51 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "r2notary",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-02",
+
+  // Placeholders only: no account IDs, real bucket names or secrets belong here.
+  // SIGNING_KEY, ADMIN_TOKEN and ALERT_WEBHOOK_URL are secrets: `.dev.vars` locally,
+  // `wrangler secret put` remotely (see docs/OPERATIONS.md once written).
+
+  "exports": {
+    "Sequencer": { "type": "durable-object", "storage": "sqlite" },
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "SEQUENCER", "class_name": "Sequencer" }],
+  },
+  "r2_buckets": [
+    { "binding": "MONITORED", "bucket_name": "example-monitored-bucket" },
+    { "binding": "LOG", "bucket_name": "example-log-bucket" },
+  ],
+  "queues": {
+    "consumers": [
+      {
+        "queue": "r2notary-events",
+        "max_batch_size": 100,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "r2notary-events-dlq",
+      },
+    ],
+  },
+  "workflows": [
+    { "binding": "SCAN_WORKFLOW", "name": "r2notary-scan", "class_name": "ScanWorkflow" },
+  ],
+  "triggers": { "crons": ["0 */6 * * *"] },
+
+  "vars": {
+    "LOG_NAME": "example-log",
+    // scheme-less, no trailing slash (C2SP tlog-tiles origin)
+    "LOG_ORIGIN": "r2notary.example.com/example-log",
+    "MONITORED_BUCKET_NAME": "example-monitored-bucket",
+    "LOG_BUCKET_NAME": "example-log-bucket",
+    "CHECKPOINT_INTERVAL_MS": "5000",
+    "BATCH_MAX_ENTRIES": "500",
+    "DEDUPE_TTL_SECONDS": "86400",
+    "AUDIT_GRACE_SECONDS": "300",
+    "DEEP_SCRUB_SAMPLE_RATE": "0",
+    "DEEP_SCRUB_MAX_BYTES": "104857600",
+    "PUBLIC_LOG": "false",
+  },
+}

@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+.wrangler
+package-lock.json
+worker/worker-configuration.d.ts
+PLAN.md
+bench/results
+cli

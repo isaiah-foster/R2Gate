@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.wrangler/
+.dev.vars
+.dev.vars.*
+*.key
+*.pem
+.env
+.env.*
+*.tsbuildinfo
+# local scratch output from benchmarks (committed results live in bench/results/)
+bench/tmp/
