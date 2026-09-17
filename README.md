@@ -2,7 +2,7 @@
 
 A verifiable, tamper-evident history for Cloudflare R2 buckets: every object change is recorded in a signed Merkle-tree transparency log that is stored in R2 itself, served as static tiles, and independently verifiable by a Go CLI.
 
-> **Status: M0 (scaffold).** Nothing described below is implemented yet. The build, test and CI plumbing exist; the log, ingest, read path, verifier and auditor arrive in later milestones (see `PLAN.md` §9). This README will be updated as each lands.
+> **Status: M1 (core library).** `packages/core` implements RFC 6962 hashing, C2SP `tlog-tiles` tile math, paths and entry bundles, canonical-JSON log entries, and `signed-note` / `tlog-checkpoint` signing and verification with Ed25519 (WebCrypto). It is tested against published RFC 6962 vectors, the tlog-tiles worked example, the signed-note spec example, and the Go `note` package's example signature. Nothing runs end to end yet: the sequencer, ingest, read path, verifier and auditor arrive in later milestones (see `PLAN.md` §9). This README will be updated as each lands.
 
 ## What it will do
 
@@ -48,7 +48,7 @@ Design decisions, including where current Cloudflare docs differ from the plan, 
 
 ## Credits
 
-Architecture inspired by Cloudflare's **Azul** CT log, **Sunlight**, **Trillian-Tessera**, and the Go checksum database (`sum.golang.org`), plus Russ Cox's "Transparent Logs for Skeptical Clients". This is an original implementation; no source was copied.
+Architecture inspired by Cloudflare's **Azul** CT log, **Sunlight**, **Trillian-Tessera**, and the Go checksum database (`sum.golang.org`), plus Russ Cox's "Transparent Logs for Skeptical Clients". This is an original implementation; no source was copied. Tests use published test vectors as data: RFC 6962 roots from `transparency-dev/merkle`, the C2SP `signed-note` and `tlog-checkpoint` examples, and the example key and signature from the `golang.org/x/mod/sumdb/note` documentation.
 
 ## License
 

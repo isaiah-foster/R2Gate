@@ -57,5 +57,12 @@ cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI r
 - Config vars arrive as **strings** in `env`; parse them once at startup.
 - After changing `worker/wrangler.jsonc`, re-run `npx wrangler types` in `worker/`.
 - Unresolved design constraints from the docs check are listed in `docs/DECISIONS.md` D0.5 (DO SQLite 2 MB
-  row limit vs `bundle_state`; R2 `etagDoesNotMatch: '*'` unverified; Ed25519 keys import as PKCS8 only).
+  row limit vs `bundle_state`; R2 `etagDoesNotMatch: '*'` unverified). Ed25519 key handling is settled
+  in D1.4 (PKCS#8-wrapped seed, Go `note`-compatible key strings).
+- `packages/core` must type-check under both `@types/node` and the Workers types (the worker
+  type-checks it through `@r2notary/core`). They disagree on some WebCrypto signatures (e.g.
+  `exportKey`, `CryptoKey` as a type); check results at runtime instead of casting.
+  `worker/test/core-runtime.test.ts` runs core's crypto inside workerd.
+- Core is pure and deterministic: same state + same entries → byte-identical tiles, bundles and root.
+  Crash-safe republication (M2) depends on this; don't add clocks or randomness to `packages/core`.
 - Commit trailer: end commits with the attribution line the harness specifies.
