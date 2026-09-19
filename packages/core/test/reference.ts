@@ -44,6 +44,23 @@ export function refRootFromLeafHashes(leaves: readonly Uint8Array[]): Uint8Array
   return go(0, leaves.length);
 }
 
+/**
+ * RFC 6962 §2.1.2 consistency proof PROOF(m, D[n]), straight from the textbook recursion:
+ * SUBPROOF(m, D[m], true) = {}; SUBPROOF(m, D[m], false) = {MTH(D[m])}; otherwise split at k and
+ * recurse left (m <= k, appending MTH of the right part) or right (appending MTH of the left part).
+ */
+export function refConsistencyProof(m: number, leaves: readonly Uint8Array[]): Uint8Array[] {
+  const sub = (m: number, d: readonly Uint8Array[], b: boolean): Uint8Array[] => {
+    const n = d.length;
+    if (m === n) return b ? [] : [refRootFromLeafHashes(d)];
+    const k = splitPoint(n);
+    if (m <= k) return [...sub(m, d.slice(0, k), b), refRootFromLeafHashes(d.slice(k))];
+    return [...sub(m - k, d.slice(k), false), refRootFromLeafHashes(d.slice(0, k))];
+  };
+  if (m === 0 || m === leaves.length) return [];
+  return sub(m, leaves, true);
+}
+
 export function refRoot(entries: readonly Uint8Array[]): Uint8Array {
   return refRootFromLeafHashes(entries.map(refLeafHash));
 }

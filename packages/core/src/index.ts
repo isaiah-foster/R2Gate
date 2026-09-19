@@ -7,4 +7,5 @@ export * from './log.ts';
 export * from './merkle.ts';
 export * from './note.ts';
 export * from './paths.ts';
+export * from './proof.ts';
 export * from './tiles.ts';

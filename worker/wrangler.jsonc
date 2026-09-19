@@ -7,6 +7,8 @@
   // Placeholders only: no account IDs, real bucket names or secrets belong here.
   // SIGNING_KEY, ADMIN_TOKEN and ALERT_WEBHOOK_URL are secrets: `.dev.vars` locally,
   // `wrangler secret put` remotely (see docs/OPERATIONS.md once written).
+  // ADMIN_TOKEN and ALERT_WEBHOOK_URL join `secrets.required` when M4/M6 use them.
+  "secrets": { "required": ["SIGNING_KEY"] },
 
   "exports": {
     "Sequencer": { "type": "durable-object", "storage": "sqlite" },

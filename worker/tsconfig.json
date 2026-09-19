@@ -3,5 +3,12 @@
   "compilerOptions": {
     "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-plugin/types"]
   },
-  "include": ["src", "test", "vitest.config.ts", "worker-configuration.d.ts"]
+  "include": [
+    "src",
+    "test",
+    "test-remote",
+    "vitest.config.ts",
+    "vitest.remote.config.ts",
+    "worker-configuration.d.ts"
+  ]
 }

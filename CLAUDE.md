@@ -56,9 +56,15 @@ cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI r
   TypeScript is pinned to 6.0.x for typescript-eslint. Don't bump either without reading D0.1/D0.2.
 - Config vars arrive as **strings** in `env`; parse them once at startup.
 - After changing `worker/wrangler.jsonc`, re-run `npx wrangler types` in `worker/`.
-- Unresolved design constraints from the docs check are listed in `docs/DECISIONS.md` D0.5 (DO SQLite 2 MB
-  row limit vs `bundle_state`; R2 `etagDoesNotMatch: '*'` unverified). Ed25519 key handling is settled
-  in D1.4 (PKCS#8-wrapped seed, Go `note`-compatible key strings).
+- D0.5's constraints are resolved in M2: no `bundle_state` row (D2.2), and create-if-absent
+  (`etagDoesNotMatch: '*'`) is pinned by a contract test that passes locally but has **not** run on
+  real R2 yet (D2.1; `npm run test:contract:remote` is opt-in and billed). Ed25519 key handling is
+  settled in D1.4 (PKCS#8-wrapped seed, Go `note`-compatible key strings).
+- Test DO error paths by calling the instance inside `runInDurableObject`: a rejected RPC call on a
+  stub is reported as an unhandled rejection by the test pool (D2.9). Worker tests get a fresh
+  `SIGNING_KEY` per run from `worker/vitest.config.ts`.
+- Every log resource except the live `checkpoint` is written create-if-absent and must stay a pure
+  function of the log prefix; publication order and recovery rules are in `worker/src/publish.ts`.
 - `packages/core` must type-check under both `@types/node` and the Workers types (the worker
   type-checks it through `@r2notary/core`). They disagree on some WebCrypto signatures (e.g.
   `exportKey`, `CryptoKey` as a type); check results at runtime instead of casting.

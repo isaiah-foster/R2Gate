@@ -9,7 +9,7 @@ describe('worker skeleton (runs inside workerd)', () => {
 
   it('reaches the SQLite-backed Sequencer DO over RPC', async () => {
     const stub = env.SEQUENCER.getByName('smoke');
-    expect(await stub.ping()).toBe('sequencer');
+    expect((await stub.status()).publishedSize).toBe(0);
   });
 
   it('has working R2 bindings for both buckets', async () => {

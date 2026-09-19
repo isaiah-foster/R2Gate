@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "test:contract:remote": "vitest run --config worker/vitest.remote.config.ts",
     "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write .",

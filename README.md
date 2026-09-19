@@ -2,7 +2,7 @@
 
 A verifiable, tamper-evident history for Cloudflare R2 buckets: every object change is recorded in a signed Merkle-tree transparency log that is stored in R2 itself, served as static tiles, and independently verifiable by a Go CLI.
 
-> **Status: M1 (core library).** `packages/core` implements RFC 6962 hashing, C2SP `tlog-tiles` tile math, paths and entry bundles, canonical-JSON log entries, and `signed-note` / `tlog-checkpoint` signing and verification with Ed25519 (WebCrypto). It is tested against published RFC 6962 vectors, the tlog-tiles worked example, the signed-note spec example, and the Go `note` package's example signature. Nothing runs end to end yet: the sequencer, ingest, read path, verifier and auditor arrive in later milestones (see `PLAN.md` §9). This README will be updated as each lands.
+> **Status: M2 (sequencer and publisher).** `packages/core` implements RFC 6962 hashing and consistency proofs, C2SP `tlog-tiles` tile math, paths and entry bundles, canonical-JSON log entries, and `signed-note` / `tlog-checkpoint` signing with Ed25519 (WebCrypto). The `Sequencer` Durable Object durably appends entries with dedupe, and publishes tiles, bundles and signed checkpoints to R2 in a crash-safe order. Its invariants (checkpoint after dependencies, monotonic and mutually consistent checkpoints, immutable resources, dedupe, byte-identical recovery from a crash at any step) are tested locally in workerd with fault injection. Local only: nothing has run against real R2 yet, and ingest, the read path, the Go verifier and the auditor arrive in later milestones (see `PLAN.md` §9).
 
 ## What it will do
 
@@ -43,6 +43,9 @@ npm run format:check
 
 cd cli && go vet ./... && go test ./...
 ```
+
+`npm run test:contract:remote` runs the R2 conditional-write contract against a real bucket. It is
+opt-in and billed; see `docs/OPERATIONS.md`.
 
 Design decisions, including where current Cloudflare docs differ from the plan, are recorded in `docs/DECISIONS.md`.
 

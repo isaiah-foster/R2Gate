@@ -1,0 +1,12 @@
+// Config for the R2 contract test against REAL R2 (docs/OPERATIONS.md). Not used by `npm test`.
+// Replace the placeholder with a dedicated, empty test bucket before running. Running it performs
+// real R2 operations on that bucket and is billed as usual.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "r2notary-contract",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-02",
+  "r2_buckets": [
+    { "binding": "CONTRACT", "bucket_name": "example-contract-bucket", "remote": true },
+  ],
+}

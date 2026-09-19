@@ -214,3 +214,194 @@ whitespace, `+` and control characters.
   compatibility rests on reproducing the Go documentation's signature exactly.
 - **D0.5 `bundle_state` 2 MB row limit** is unchanged: `LogState.bundle` is an in-memory list of
   entries, and how M2 persists it is still open.
+
+## M2: Sequencer + publisher (2026-10-02)
+
+Docs checked for this milestone (2026-10-02): R2 Workers API reference (`onlyIf`, `R2Conditional`,
+`sha256`, strong consistency); DO SQLite storage API (`exec`, `transactionSync`, alarms, output
+gates); DO limits; DO alarms (retries); Vitest integration test APIs; wrangler `secrets` config and
+remote bindings. Code: `worker/src/{config,store,publish,sequencer}.ts`, `packages/core/src/proof.ts`.
+
+### D2.1 Create-if-absent is `onlyIf: { etagDoesNotMatch: '*' }`, pinned by a contract test
+
+- **Docs say:** `put()` returns `null` when an `onlyIf` precondition fails and stores nothing.
+  `etagDoesNotMatch` is documented, but what `'*'` means is still **not** documented (D0.5). A
+  `Headers` object with `If-None-Match` is accepted as an alternative. workers-sdk issue #6411
+  reported Miniflare inverting `'*'` conditionals (Miniflare 3.20240725; closed "not planned").
+- **Decision:** use `etagDoesNotMatch: '*'`, and test it instead of trusting it.
+  `worker/test/contract/r2-conditional.ts` checks: creates when absent; returns `null` and leaves
+  the object unchanged when present; the `If-None-Match: *` Headers form behaves the same; a
+  concrete etag still compares; a wrong `sha256` is rejected; `putImmutable` semantics.
+- **Result:** passes against local R2 (wrangler 4.147.0 / workerd 1.20261001.1). The #6411
+  inversion is not present. **Not yet run against real R2**: that needs a bucket and the owner's
+  approval. The same contract runs remotely with `npm run test:contract:remote` (remote bindings,
+  which the docs confirm `@cloudflare/vitest-plugin` supports); see `docs/OPERATIONS.md`. Planned
+  for M6, as the plan says.
+- **Defense in depth:** if R2 ever answers "precondition failed" for an absent object (an inverted
+  implementation), `putImmutable` throws `ConditionalWriteError` instead of continuing. A silent
+  overwrite cannot be detected by the writer alone; that is what the contract test is for.
+
+### D2.2 No `bundle_state` row: the `entries` table keeps the partial bundle (resolves D0.5)
+
+- **Problem:** PLAN §5.3 stores the partial bundle as one BLOB. DO SQLite caps a row at 2 MB, and
+  255 worst-case valid entries (CopyObject with two 1,024-byte keys of control characters, ~12 KB
+  each) is over 3 MB. A test builds exactly that bundle.
+- **Decision:** PLAN's `staging` table is named `entries` and keeps, besides unpublished entries,
+  the already-published entries of the current partial bundle (`seq ≥ 256·⌊published_size/256⌋`).
+  Commit deletes rows below that bound. The partial bundle is read back from those rows. Each row
+  holds one entry (≤ 65,535 bytes), far under the limit.
+- **Alternatives:** chunking the BLOB over several rows (another structure that can disagree);
+  reading the partial bundle back from R2 (a Class B read on every publish, and it trusts R2 for
+  writer state).
+- **Also:** `entries` has no `event_id` column. Dedupe lives only in `seen`. With rows now
+  outliving publication, a `UNIQUE(event_id)` there would make an event re-delivered after its
+  dedupe window expired fail with a constraint error instead of being logged again (D2.6).
+
+### D2.3 Partial tiles and bundles are create-if-absent too
+
+- **Plan said:** step 4(b) writes partials at their `.p/<W>` paths (implicitly, overwrite), while
+  I4 says partial tiles by path never change.
+- **Decision:** every resource except the live `checkpoint` goes through `putImmutable`. A partial
+  tile at a given path is fixed by the prefix it covers, so a conflicting one is divergence, the
+  same as for a full tile.
+- **Optimization:** a partial tile whose (level, index, width) is unchanged since the last commit
+  was written by that publication and is skipped. Upper levels change rarely, so most checkpoints
+  write one partial tile, one partial bundle and two checkpoint objects. The write count per
+  checkpoint is a §14 benchmark question; no figure is claimed here.
+
+### D2.4 `publishing_size` makes recovery monotonic
+
+- **Problem:** a crash after the live checkpoint is written but before commit leaves R2 ahead of
+  SQLite. If the retry picks a smaller batch (say `BATCH_MAX_ENTRIES` was lowered in between), it
+  would overwrite the live checkpoint with a smaller size: a visible rollback.
+- **Decision:** before any R2 write, publication records its target size in `meta.publishing_size`.
+  A retry publishes at least that size. Commit clears it. Tested: crash after `checkpoint-written`,
+  shrink the batch to 10, recover at 550, not 260.
+- **Why the rest is safe without more bookkeeping:** every resource is a pure function of the log
+  prefix it covers, and the prefix is fixed once durable. A retry with a _larger_ batch (entries
+  arrived in between) leaves an orphaned archive and partial tiles for the interrupted size. They
+  are valid: the archive is a real prefix of the log and consistent with every later checkpoint
+  (tested).
+
+### D2.5 Archived checkpoints are compared by signed text
+
+`x-checkpoints/<size>` is create-if-absent. If it already exists, the signed text (origin, size,
+root) must match; the signature lines may differ. Ed25519 is deterministic, so with an unchanged key
+the bytes are identical anyway. Comparing text keeps a key rotation between a crash and its retry
+from being reported as divergence, and still catches any different tree. The live `checkpoint` is
+the only unconditional write.
+
+### D2.6 Dedupe semantics (I5)
+
+- An `eventId` accepted at time `t` is a duplicate during `[t, t + DEDUPE_TTL_SECONDS)`. After
+  that it is accepted again, even if its `seen` row has not been pruned yet. Rows are pruned on
+  every alarm.
+- Duplicates within one append call, across calls, after publication, and across concurrent
+  calls are all covered by tests. Concurrent appends are safe because each append is one
+  synchronous `transactionSync`.
+- **Durable point:** `append` returns after its transaction commits. The DO output gate holds the
+  RPC response until writes are flushed ("the system will pause outgoing network messages ... until
+  all previous writes have been confirmed flushed to disk", SQLite storage API docs). Not testable
+  locally.
+- `append` is all-or-nothing on validation: every item must be a known, schema-valid entry, and any
+  entry naming a bucket must name `MONITORED_BUCKET_NAME`. That keeps the `objects` view
+  single-bucket. Rejecting events from the log bucket itself (I8) is M3's job in the consumer; this
+  is a second line of defence.
+
+### D2.7 The `objects` view
+
+- Updated at commit (step 5), not at append, so the auditor's expected state only cites entries
+  already covered by a published checkpoint.
+- An event older (by `eventTime`) than the stored state for its key does not replace it; equal
+  times go to the later `seq`. A single SQLite upsert with `WHERE excluded.event_ms >=
+objects.event_ms`.
+- **Added column `event_ms`:** RFC 3339 strings with different offsets do not sort as text, so
+  times are converted to epoch milliseconds by a hand-written parser (`eventMillis`), not
+  `Date.parse`, so ordering does not depend on the engine's date parser. Sub-millisecond digits
+  are truncated.
+- `object.snapshot` sets state with `uploaded` as its time. `audit.finding` and
+  `audit.observation` go into `key_index` (so `lookup` shows them) but do not change state.
+- `getObjectStates({after, through, limit})` and `lookup(key)` exist now so the view can be tested
+  through RPC. Their shapes may change when M4/M6 use them.
+
+### D2.8 Scheduling, single flight, and failure handling
+
+- **Deadline:** publication is due `CHECKPOINT_INTERVAL_MS` after the _oldest pending_ entry was
+  accepted (`entries.received_at`), or immediately once `BATCH_MAX_ENTRIES` are pending. The first
+  version used "now + interval" at re-arm time, which made the leftovers of a drained backlog wait
+  a full extra interval. The rule is a pure function (`publicationDue`) with its own test.
+- **Single flight:** input gates only cover storage operations, so other requests run while a
+  publication awaits R2. `publish()` shares one in-flight promise, and `commitPublish` refuses to
+  run unless `published_size` still equals the size the run started from.
+- **Failures:** the runtime retries a throwing alarm at most 6 times (docs), after which durable
+  entries would sit unpublished until the next append. So `alarm()` catches a failed publication
+  and sets its own retry 30 s later (`PUBLISH_RETRY_MS`). The error is logged and kept in
+  `status().lastError`. A `TILE_DIVERGENCE` fails again on every retry, which is the intended
+  "fail loudly": it needs a human.
+- **Migrations** run synchronously in the constructor rather than in `blockConcurrencyWhile`
+  (PLAN §5.3). Synchronous SQL completes before any event is delivered, so the wrapper adds nothing.
+  Migrations are versioned (`meta.schema_version`), idempotent, and refuse a newer schema.
+
+### D2.9 Testing approach
+
+- `publish()` is a plain function over a `SequencerStore`, a `LogBucket` and hooks. Tests run it
+  inside `runInDurableObject` against real DO SQLite and local R2. The DO class calls the same
+  function with no hooks.
+- **Fault injection:** `afterStep` (7 steps) and `beforeWrite` (every R2 write) hooks throw. Each
+  crash point is followed by recovery with a fresh store (state reloaded from SQLite), and the
+  whole log prefix is compared byte for byte with an uncrashed reference run. This simulates a
+  crash as an exception plus loss of memory. It does not kill the isolate mid-`await`; there is no
+  hook for that in the test pool.
+- **I2:** a wrapping bucket checks, at every live-checkpoint write, that all tiles and bundles of
+  that size already exist in R2.
+- **I3:** a consistency proof between every pair of archived checkpoints is computed from the
+  published tiles and verified (core `consistencyProof` / `verifyConsistency`, D2.10).
+- **Mutation check:** each of these was broken on purpose and the named tests failed: checkpoint
+  written first (I2, I3, I6), immutable writes unconditional (I4, contract), no
+  `publishing_size` floor (I6 shrink test), no dedupe check (I5), `eventTime` ordering ignored
+  (objects view), wrong partial-tile skip (I2, I3, I6).
+- **Test-pool quirk:** a rejected RPC call on a DO stub is reported by
+  `@cloudflare/vitest-plugin` 1.3.6 as an unhandled rejection even when the test awaits it.
+  Error paths are therefore tested by calling the instance inside `runInDurableObject`.
+- **Signing key:** `worker/vitest.config.ts` generates a fresh key each run and passes it as the
+  `SIGNING_KEY` secret through `process.env`, so no key material is committed. `SIGNING_KEY` is
+  declared in `secrets.required` (wrangler config docs), which also types it in `Env`.
+
+### D2.10 Consistency proofs in `packages/core` (follow-up to D1.11)
+
+- `consistencyProof(size1, size2, readNodes)` implements RFC 6962 §2.1.2 `PROOF` over any source of
+  subtree hashes. `tileNodeReader(size, readTile)` provides them from tlog-tiles, reading each tile
+  once, with the width it has at `size`. `verifyConsistency` is RFC 9162 §2.1.4.2, using
+  arithmetic instead of 32-bit bit operations. Written test-first against an independent recursive
+  reference (`test/reference.ts`) and three vectors derived from the `transparency-dev/merkle`
+  node-hash table.
+- **A wrong test, caught:** the first property test also expected verification to fail for a
+  mutated `size2`. It does not always fail: `PROOF(1, D[5])` also verifies "1 → 6" against the
+  size-5 root, because the proof has the same shape. That is not a forgery, since sizes are bound
+  to roots by the checkpoint signature. The mutation was removed and the reason commented.
+- **Inclusion proofs** are deferred. Nothing in M2 needs them. The Go CLI implements its own in M5.
+
+### D2.11 Write details
+
+- Every immutable put sends `sha256` (R2 rejects the upload if the bytes it received hash
+  differently; covered by the contract test) and `httpMetadata` (content type; `immutable` cache
+  control for tiles, bundles and archives; `max-age=2` for the live checkpoint), so the bucket can
+  later be served directly through an R2 custom domain (PLAN §5.5).
+- Writes within a phase run at most 6 at a time. The DO limits page lists 6 simultaneous outgoing
+  connections per request. Whether R2 binding calls count against that is not stated, so this is
+  conservative.
+
+### D2.12 Configuration
+
+`worker/src/config.ts` parses vars once (DO constructor) and rejects: an invalid `LOG_NAME` (it is
+an R2 prefix and URL segment), an invalid `LOG_ORIGIN` (`validateOrigin`), invalid bucket names,
+`MONITORED_BUCKET_NAME == LOG_BUCKET_NAME` (PLAN §5.4), and out-of-range integers.
+`BATCH_MAX_ENTRIES` is capped at 1,000 because one publication holds its batch in memory.
+
+### D2.13 Deferred from M2
+
+- **Real-R2 contract run** (D2.1): needs approval; M6.
+- **A DO-level test across the 65,536 (level-2 tile) boundary.** Core tests cover those sizes
+  (I1). The DO tests cross level-1 boundaries only, to keep the suite fast.
+- **Admin `publish` route, `/status` counters for invalid/DLQ messages**: M3/M4.
+- **Unicode key-order agreement** between R2 `list()` and SQLite: M6, as planned.
