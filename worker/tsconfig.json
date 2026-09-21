@@ -5,6 +5,7 @@
   },
   "include": [
     "src",
+    "dev",
     "test",
     "test-remote",
     "vitest.config.ts",

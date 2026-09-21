@@ -38,6 +38,8 @@ npm run lint                 # eslint, typescript-eslint strictTypeChecked
 npm run typecheck            # tsc for root, packages/core, worker
 npm run format:check         # prettier (npm run format to fix)
 npx wrangler types           # run in worker/ after editing wrangler.jsonc
+npm run dev:sim              # local wrangler dev: r2notary + dev-only event simulator (needs SIGNING_KEY)
+npm run simulate -- --help   # send synthetic R2 notifications to dev:sim; compare /api/v1/status
 
 cd cli && go vet ./... && go test ./...
 cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI runs
@@ -71,4 +73,9 @@ cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI r
   `worker/test/core-runtime.test.ts` runs core's crypto inside workerd.
 - Core is pure and deterministic: same state + same entries → byte-identical tiles, bundles and root.
   Crash-safe republication (M2) depends on this; don't add clocks or randomness to `packages/core`.
+- Ingest (M3): one `Sequencer.ingest(items, report)` RPC per queue batch commits events and
+  counters together; eventId is SHA-256 of a canonical JSON array, not a `|` join (D3.1). Unknown
+  fields in R2 messages are ignored, documented ones are strict (D3.2). The test pool's
+  `retryAll()` drops its options (D3.8). A Worker module may export only handlers/classes (workerd
+  refuses plain constants), which tests don't catch; `npm run dev:sim` does.
 - Commit trailer: end commits with the attribution line the harness specifies.

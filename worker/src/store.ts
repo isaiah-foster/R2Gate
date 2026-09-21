@@ -10,6 +10,7 @@
 //   tile_state  the partial tile at each level for published_size
 //   objects     latest logged state per key (the auditor's "expected state")
 //   key_index   (key, seq) for every published entry that names a key
+//   counters    ingest counters shown by /status (v2)
 
 import {
   TILE_WIDTH,
@@ -30,6 +31,38 @@ export interface AppendResult {
   /** Sequence number of the first accepted item, or null if every item was a duplicate. */
   readonly firstSeq: number | null;
 }
+
+/** What a queue batch contained besides loggable events (PLAN §5.4). */
+export interface IngestReport {
+  readonly invalid: number;
+  /** Events from the log bucket (I8). */
+  readonly loopDropped: number;
+  /** Events from a bucket other than MONITORED_BUCKET_NAME. */
+  readonly foreignDropped: number;
+  /** Messages delivered from the dead-letter queue. */
+  readonly deadLettered: number;
+  /** Why the batch's last invalid message was rejected. Never contains message content. */
+  readonly lastInvalid?: string;
+}
+
+export interface IngestCounters {
+  readonly accepted: number;
+  readonly duplicates: number;
+  readonly invalid: number;
+  readonly loopDropped: number;
+  readonly foreignDropped: number;
+  readonly deadLettered: number;
+  readonly lastInvalid: { readonly at: number; readonly reason: string } | null;
+}
+
+const COUNTERS = [
+  'accepted',
+  'duplicates',
+  'invalid',
+  'loopDropped',
+  'foreignDropped',
+  'deadLettered',
+] as const;
 
 export interface ObjectState {
   readonly key: string;
@@ -77,6 +110,8 @@ const MIGRATIONS: readonly (readonly string[])[] = [
        deleted INTEGER NOT NULL DEFAULT 0)`,
     `CREATE TABLE key_index(key TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY(key, seq))`,
   ],
+  // v2 (M3)
+  [`CREATE TABLE counters(name TEXT PRIMARY KEY, value INTEGER NOT NULL)`],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -201,36 +236,92 @@ export class SequencerStore {
    * already be validated by the caller.
    */
   append(items: readonly AppendItem[], now: number, ttlMs: number): AppendResult {
+    return this.#storage.transactionSync(() => this.#insert(items, now, ttlMs));
+  }
+
+  /**
+   * A queue batch: its events and its counters in one transaction, so the counters move exactly
+   * when the events become durable. `items` may be empty (a batch of nothing but junk).
+   */
+  ingest(
+    items: readonly AppendItem[],
+    report: IngestReport,
+    now: number,
+    ttlMs: number,
+  ): AppendResult {
     return this.#storage.transactionSync(() => {
-      let next = this.nextSeq();
-      let firstSeq: number | null = null;
-      let duplicates = 0;
-      for (const { eventId, entry } of items) {
-        const seen = this.#sql
-          .exec<{ expires_at: number }>('SELECT expires_at FROM seen WHERE event_id = ?', eventId)
-          .next();
-        if (seen.done !== true && seen.value.expires_at > now) {
-          duplicates++;
-          continue;
-        }
-        firstSeq ??= next;
+      const result = this.#insert(items, now, ttlMs);
+      const add = { ...report, accepted: result.accepted, duplicates: result.duplicates };
+      for (const name of COUNTERS) {
+        if (add[name] === 0) continue;
         this.#sql.exec(
-          'INSERT INTO entries(seq, entry, received_at) VALUES (?, ?, ?)',
-          next,
-          entry,
-          now,
+          `INSERT INTO counters(name, value) VALUES (?1, ?2)
+           ON CONFLICT(name) DO UPDATE SET value = value + ?2`,
+          name,
+          add[name],
         );
-        this.#sql.exec(
-          'INSERT OR REPLACE INTO seen(event_id, seq, expires_at) VALUES (?, ?, ?)',
-          eventId,
-          next,
-          now + ttlMs,
-        );
-        next++;
       }
-      this.#setMeta('next_seq', next);
-      return { accepted: items.length - duplicates, duplicates, firstSeq };
+      if (report.lastInvalid !== undefined) {
+        this.#setMeta('last_invalid_at', now);
+        this.#setMeta('last_invalid', report.lastInvalid);
+      }
+      return result;
     });
+  }
+
+  #insert(items: readonly AppendItem[], now: number, ttlMs: number): AppendResult {
+    let next = this.nextSeq();
+    let firstSeq: number | null = null;
+    let duplicates = 0;
+    for (const { eventId, entry } of items) {
+      const seen = this.#sql
+        .exec<{ expires_at: number }>('SELECT expires_at FROM seen WHERE event_id = ?', eventId)
+        .next();
+      if (seen.done !== true && seen.value.expires_at > now) {
+        duplicates++;
+        continue;
+      }
+      firstSeq ??= next;
+      this.#sql.exec(
+        'INSERT INTO entries(seq, entry, received_at) VALUES (?, ?, ?)',
+        next,
+        entry,
+        now,
+      );
+      this.#sql.exec(
+        'INSERT OR REPLACE INTO seen(event_id, seq, expires_at) VALUES (?, ?, ?)',
+        eventId,
+        next,
+        now + ttlMs,
+      );
+      next++;
+    }
+    this.#setMeta('next_seq', next);
+    return { accepted: items.length - duplicates, duplicates, firstSeq };
+  }
+
+  ingestCounters(): IngestCounters {
+    const values = new Map<string, number>();
+    for (const row of this.#sql.exec<{ name: string; value: number }>(
+      'SELECT name, value FROM counters',
+    )) {
+      values.set(row.name, int(row.value, `counter ${row.name}`));
+    }
+    const at = this.#meta('last_invalid_at');
+    const reason = this.#meta('last_invalid');
+    const count = (name: (typeof COUNTERS)[number]): number => values.get(name) ?? 0;
+    return {
+      accepted: count('accepted'),
+      duplicates: count('duplicates'),
+      invalid: count('invalid'),
+      loopDropped: count('loopDropped'),
+      foreignDropped: count('foreignDropped'),
+      deadLettered: count('deadLettered'),
+      lastInvalid:
+        typeof reason === 'string' && at !== undefined && at !== null
+          ? { at: int(at, 'meta.last_invalid_at'), reason }
+          : null,
+    };
   }
 
   /** Deletes dedupe records whose window has passed. */

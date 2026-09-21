@@ -1,0 +1,11 @@
+// Dev-only: the event simulator's producer Worker. Never deploy this config.
+// Run it in the same wrangler process as r2notary (first config = primary, gets the port):
+//   npx wrangler dev -c worker/dev/wrangler.simulator.jsonc -c worker/wrangler.jsonc
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "r2notary-simulator",
+  "main": "simulator.ts",
+  "compatibility_date": "2026-10-02",
+  "queues": { "producers": [{ "binding": "EVENTS", "queue": "r2notary-events" }] },
+  "services": [{ "binding": "R2NOTARY", "service": "r2notary" }],
+}

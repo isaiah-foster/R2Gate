@@ -20,6 +20,10 @@
     { "binding": "MONITORED", "bucket_name": "example-monitored-bucket" },
     { "binding": "LOG", "bucket_name": "example-log-bucket" },
   ],
+  // The consumer acks a batch once the Sequencer has it, and retries it with backoff otherwise
+  // (worker/src/ingest.ts). After max_retries a message moves to the dead-letter queue, which this
+  // Worker also consumes: one more attempt to log it, and a count in /status. The DLQ has no DLQ of
+  // its own, so a message that fails there too is dropped; the auditor (M6) is the backstop.
   "queues": {
     "consumers": [
       {
@@ -28,6 +32,12 @@
         "max_batch_timeout": 5,
         "max_retries": 5,
         "dead_letter_queue": "r2notary-events-dlq",
+      },
+      {
+        "queue": "r2notary-events-dlq",
+        "max_batch_size": 100,
+        "max_batch_timeout": 30,
+        "max_retries": 5,
       },
     ],
   },
@@ -45,6 +55,8 @@
     "CHECKPOINT_INTERVAL_MS": "5000",
     "BATCH_MAX_ENTRIES": "500",
     "DEDUPE_TTL_SECONDS": "86400",
+    // must match the dead_letter_queue above
+    "EVENTS_DLQ_NAME": "r2notary-events-dlq",
     "AUDIT_GRACE_SECONDS": "300",
     "DEEP_SCRUB_SAMPLE_RATE": "0",
     "DEEP_SCRUB_MAX_BYTES": "104857600",

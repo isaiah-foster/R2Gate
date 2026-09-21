@@ -405,3 +405,143 @@ an R2 prefix and URL segment), an invalid `LOG_ORIGIN` (`validateOrigin`), inval
   (I1). The DO tests cross level-1 boundaries only, to keep the suite fast.
 - **Admin `publish` route, `/status` counters for invalid/DLQ messages**: M3/M4.
 - **Unicode key-order agreement** between R2 `list()` and SQLite: M6, as planned.
+
+## M3: Ingest (2026-10-02)
+
+Docs checked for this milestone (2026-10-02): R2 event notifications (message format, event types,
+limits); Queues JavaScript APIs, batching and retries (explicit ack/retry precedence), limits, and
+local development; Vitest integration test APIs (`createMessageBatch`, `getQueueResult`); `wrangler
+queues create` and `wrangler r2 bucket notification create` (`--help`, wrangler 4.147.0). Code:
+`worker/src/ingest.ts`, `worker/src/index.ts`, `worker/dev/`, `scripts/simulate-events.ts`,
+`scripts/simulate/events.ts`.
+
+### D3.1 eventId hashes a canonical JSON array, not a `|`-joined string
+
+- **Plan said:** `eventId = hex(SHA256(bucket|key|action|etag|eventTime))`.
+- **Problem:** object keys may contain `|`, and so may the entry schema's ETags. Then
+  `key="a", etag="b|PutObject|c"` and `key="a|PutObject|b", etag="c"` produce the same string. A
+  colliding event would be dropped as a duplicate (I5 working against us). Anyone who can choose
+  key names gets some control over this; R2's real ETags are hex, which makes it harder but does
+  not rule it out.
+- **Decision:** `hex(SHA-256(canonicalJson([bucket, key, action, etag ?? null, eventTime])))`. Each
+  tuple has exactly one encoding. Deletes have no ETag, so it is `null`. That is different from the
+  string `"null"`. A test pins the exact preimage and shows that the `|` collision no longer occurs.
+- **Alternatives:** length-prefixed fields (equivalent, but needs its own codec); hashing the whole
+  message (it would include `account`, and any field R2 adds later would change the ID).
+- **Consequence:** two events with the same bucket, key, action, ETag and `eventTime` string are
+  one event. Two identical PUTs to one key in the same millisecond are logged once. They leave the
+  same state, and R2 gives the consumer nothing that tells them apart.
+
+### D3.2 What "strict validation" means for fields R2 might add
+
+- **Decision:** every documented field the consumer uses is checked strictly. Types are checked in
+  `classifyMessage`, and formats by `encodeEntry`: bucket rules, keys at most 1,024 bytes, ETag
+  charset, non-negative integer sizes, RFC 3339 times, no size/ETag on deletes, `copySource` only on
+  `CopyObject`. **Unknown fields are ignored**, not rejected, and are never logged.
+- **Why:** if a field R2 adds later (say a version ID) were a validation error, every event would
+  be acked and dropped from then on. The log would go dark with only a counter to show it. Ignoring
+  it loses nothing the log records today. A _documented_ field with the wrong type or format is
+  still rejected: that is a real contract break and should be visible.
+- **Deletes that carry `size`/`eTag`** contradict the docs and are rejected as invalid (the entry
+  schema forbids them, D1.6). That is the strict choice. If real R2 sends them, the
+  `invalid` counter and `lastInvalid` reason will show it quickly (D3.7).
+
+### D3.3 Batch handling, retries and counters
+
+- **One RPC per batch:** `Sequencer.ingest(items, report)` appends the batch's events (possibly
+  none) and adds its counters in **one SQLite transaction**. The counters therefore move exactly
+  when events become durable. `append` stays as it was for other writers (the auditor in M6).
+- **Ack/retry:** on success the batch is acked, invalid messages included. They can never become
+  valid, so retrying them is pointless (PLAN: "do not retry poison forever"). If the RPC fails, the
+  **whole batch** is retried with `retryAll({delaySeconds})`. The delay is 10 s doubling per
+  attempt, capped at 300 s, so the 5 configured retries span about 5 minutes before the dead-letter
+  queue. The handler does not throw. A throw would also retry the batch, but with no delay.
+- **Counter semantics:** counts are exact unless an RPC commits and its response is lost. The
+  retried batch's events are then deduplicated, but its drop counts are added a second time. The
+  counters are operational signals, not evidence. The evidence is the log.
+- **Loop protection (I8), three layers:** config rejects `MONITORED == LOG` (D2.12). The consumer
+  checks a message's `bucket` against the log bucket _before anything else_, so even a malformed
+  log-bucket event is counted as a loop, not as invalid. The Sequencer rejects any entry not naming
+  the monitored bucket (D2.6). Events from any other bucket are counted as `foreignDropped`.
+- **Clock:** `ingestedAt` is the Worker clock when the batch is handled. A redelivered event gets
+  a new `ingestedAt`, but dedupe is on `eventId`, which excludes it.
+
+### D3.4 `/status` counters arrive in M3; the route is minimal
+
+PLAN M3's acceptance criteria say "counters visible in `/status`", but the routes are M4. So M3 adds
+only `GET`/`HEAD /api/v1/status` (`no-store`, JSON): log size, durable size, pending, last
+checkpoint time, next publication, last error, and the ingest counters with the last rejection
+reason. Rejection reasons name the field, never its value: they are served publicly, and keys can
+be sensitive (tested). M4 adds the other routes and decides how `PUBLIC_LOG=false` applies here;
+M6 adds the audit summary. The counters live in a new `counters` table (schema v2, with a tested
+v1→v2 upgrade).
+
+### D3.5 The Worker consumes its own dead-letter queue
+
+- **Plan said:** configure a DLQ and show DLQ counters in `/status`. It did not say who reads the DLQ.
+- **Decision:** a second consumer entry reads `r2notary-events-dlq` with the same handler.
+  `batch.queue === EVENTS_DLQ_NAME` (a new var, validated at startup) marks those messages as
+  `deadLettered`. They are then processed normally: one more chance to be logged (dedupe makes this
+  safe if an earlier attempt did commit), and they are counted. The DLQ has no DLQ of its own.
+  A message that fails there too is dropped after its retries, and the auditor (M6) is the backstop
+  for anything lost.
+- **Why:** a message only reaches the DLQ after about 5 minutes of failed Sequencer calls, which
+  points to an outage. Consuming the DLQ later recovers those events. An unread DLQ silently
+  expires after 24 h on the free plan, and the Worker cannot see its depth.
+
+### D3.6 Local simulation runs through a real local queue
+
+- **Problem:** local R2 emits no notifications, and Queues offer no way to inject messages from
+  outside the runtime. The docs support one `wrangler dev` process with several configs (`-c a -c
+b`, marked experimental), where the first config is primary and gets the port.
+- **Decision:** a dev-only producer Worker (`worker/dev/simulator.ts`, never deployed) is primary.
+  It accepts `POST /__simulate/send` (at most 100 messages, the `sendBatch` limit), sends them with
+  `contentType: 'json'`, and forwards every other request to r2notary through a service binding.
+  `scripts/simulate-events.ts` generates the traffic. The generator (`scripts/simulate/events.ts`)
+  is pure and seeded, and the worker tests use it too. It returns a manifest of the expected
+  counters and final per-key state.
+- **Run once (2026-10-02, wrangler 4.147.0, local mode only):** 507 messages (400 distinct events,
+  87 duplicates, 12 malformed, 5 from the log bucket, 3 from another bucket, shuffled with window
+  30). `/api/v1/status` matched the manifest exactly. The alarm published one checkpoint at size
+  400 (tiles `0/000`, `0/001.p/144`, `1/000.p/1`, matching bundles, `x-checkpoints/400`). This run
+  also caught a bug no test could have caught: workerd refuses a Worker module that exports a plain
+  constant. It is not a benchmark, so no timing is reported.
+- **Not covered:** this exercises local Queues, not R2's real notification payloads (D3.7).
+
+### D3.7 Open questions for the first real events (M6, needs approval)
+
+The docs give one example message. They do not say:
+
+- whether `object.key` is URL-encoded in notifications (S3's are). The consumer logs the key
+  **verbatim**. If R2 encodes it, the log and the auditor's `list()` keys disagree for keys that
+  need escaping. The auditor would then report false `UNLOGGED_OBJECT`/`MISSING_OBJECT` findings,
+  so this must be checked before M6's demo;
+- whether `eTag` is ever quoted (the docs example is not; a quoted one is rejected as invalid);
+- the exact `eventTime` format across actions (any RFC 3339 offset is accepted, D1.6).
+  The remote end-to-end run (PLAN §10) should print a few raw messages and confirm all three.
+
+### D3.8 Testing notes
+
+- `consumeBatch` takes an `IngestSink`, so its failure path is tested with a fake that rejects.
+  That avoids the test pool reporting rejected DO RPCs as unhandled (D2.9).
+- **Test-pool quirk:** `@cloudflare/vitest-plugin` 1.3.6's `createMessageBatch().retryAll()`
+  ignores its options, so `getQueueResult` never shows `delaySeconds`. The test wraps the batch to
+  record the options instead.
+- **End to end in workerd:** 300 simulated events (20% duplicates, shuffle window 25, malformed,
+  loop and foreign events) go through the real queue handler and the real Sequencer. The test then
+  checks the counters, the published size, every published entry (decoded from the R2 bundles: only
+  the monitored bucket, and no account ID anywhere), and the objects view against the generator's
+  final state, which shows that out-of-order delivery does not corrupt it. Replaying the whole
+  stream adds nothing. Overlapping batches delivered concurrently are each recorded once (I5).
+- **Mutation check:** each of these was broken on purpose and tests failed: no log-bucket check
+  (5 failures), neither bucket check (6), `|`-joined eventId (2), ack instead of retry on failure
+  (1), DLQ messages not counted (2), invalid messages not counted (6).
+
+### D3.9 Deferred from M3
+
+- **Real notifications and queues:** need the owner's approval; commands are in
+  `docs/OPERATIONS.md`. The questions in D3.7 stay open until then.
+- **`scripts/keygen`** (M4). The local run above generated a key with `packages/core`'s
+  `generateKey` inline.
+- **`PUBLIC_LOG`/auth on `/api/v1/status`** and the other routes: M4.
+- **Throughput of the consumer → Sequencer path:** a §14 benchmark (M7); no figure is claimed.

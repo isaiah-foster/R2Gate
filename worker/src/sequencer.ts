@@ -7,6 +7,8 @@ import {
   SequencerStore,
   type AppendItem,
   type AppendResult,
+  type IngestCounters,
+  type IngestReport,
   type ObjectRange,
   type ObjectState,
 } from './store.ts';
@@ -30,6 +32,7 @@ export interface SequencerStatus {
   readonly lastPublishAt: number | null;
   readonly lastError: string | null;
   readonly alarmAt: number | null;
+  readonly ingest: IngestCounters;
 }
 
 export class AppendError extends Error {
@@ -65,6 +68,29 @@ export function validateAppendItems(items: readonly AppendItem[], monitoredBucke
       throw new AppendError(`item ${String(i)}: bucket ${e.bucket} is not the monitored bucket`);
     }
   });
+}
+
+const REPORT_COUNTS = ['invalid', 'loopDropped', 'foreignDropped', 'deadLettered'] as const;
+
+/** Checks an ingest report from the queue consumer (exact fields, non-negative integers). */
+export function validateIngestReport(report: IngestReport): void {
+  const r: unknown = report; // arrives over RPC: check the shape, not just the declared type
+  if (typeof r !== 'object' || r === null) throw new AppendError('report must be an object');
+  for (const k of Object.keys(report)) {
+    if (!(REPORT_COUNTS as readonly string[]).includes(k) && k !== 'lastInvalid') {
+      throw new AppendError(`report.${k} is not a known field`);
+    }
+  }
+  for (const k of REPORT_COUNTS) {
+    const v: unknown = report[k];
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0 || v > MAX_APPEND_ITEMS) {
+      throw new AppendError(`report.${k} must be an integer 0..${String(MAX_APPEND_ITEMS)}`);
+    }
+  }
+  const reason: unknown = report.lastInvalid;
+  if (reason !== undefined && (typeof reason !== 'string' || reason.length > 200)) {
+    throw new AppendError('report.lastInvalid must be a string of at most 200 characters');
+  }
 }
 
 /**
@@ -107,6 +133,24 @@ export class Sequencer extends DurableObject<Env> {
     validateAppendItems(items, this.#config.monitoredBucket);
     const result = this.#store.append(items, Date.now(), this.#config.dedupeTtlSeconds * 1000);
     await this.#scheduleAlarm(false);
+    return result;
+  }
+
+  /**
+   * One queue batch from the consumer: its events (possibly none) and the counts of what it
+   * dropped, committed together (PLAN §5.4). Durable when it returns, like `append`.
+   */
+  async ingest(items: AppendItem[], report: IngestReport): Promise<AppendResult> {
+    validateIngestReport(report);
+    if (!Array.isArray(items) || items.length > 0)
+      validateAppendItems(items, this.#config.monitoredBucket);
+    const result = this.#store.ingest(
+      items,
+      report,
+      Date.now(),
+      this.#config.dedupeTtlSeconds * 1000,
+    );
+    if (result.accepted > 0) await this.#scheduleAlarm(false);
     return result;
   }
 
@@ -188,6 +232,7 @@ export class Sequencer extends DurableObject<Env> {
       lastPublishAt: this.#store.lastPublishAt(),
       lastError: this.#store.lastError(),
       alarmAt: await this.ctx.storage.getAlarm(),
+      ingest: this.#store.ingestCounters(),
     };
   }
 

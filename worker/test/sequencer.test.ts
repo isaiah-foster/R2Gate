@@ -10,7 +10,7 @@ import {
   PUBLISH_RETRY_MS,
   publicationDue,
 } from '../src/sequencer.ts';
-import { SequencerStore, eventMillis } from '../src/store.ts';
+import { SCHEMA_VERSION, SequencerStore, eventMillis } from '../src/store.ts';
 import { BUCKET, items, liveCheckpoint, objectEvent, withStore } from './helpers.ts';
 
 // Every Sequencer here publishes under the configured LOG_NAME, so wipe R2 and DO storage between
@@ -291,7 +291,22 @@ describe('store internals', () => {
       store.migrate();
       expect(
         state.storage.sql.exec('SELECT v FROM meta WHERE k = ?', 'schema_version').one().v,
-      ).toBe(1);
+      ).toBe(SCHEMA_VERSION);
+    });
+  });
+
+  it('upgrades a v1 database to v2 (counters) without touching its entries', async () => {
+    const s = stub();
+    await s.append(items(3));
+    await runInDurableObject(s, (_, state) => {
+      // Roll the schema back to what M2 shipped.
+      state.storage.sql.exec('DROP TABLE counters');
+      state.storage.sql.exec("UPDATE meta SET v = 1 WHERE k = 'schema_version'");
+      const store = new SequencerStore(state.storage);
+      store.migrate();
+      expect(store.nextSeq()).toBe(3);
+      expect(store.readEntries(0, 3)).toHaveLength(3);
+      expect(store.ingestCounters()).toMatchObject({ accepted: 0, invalid: 0, lastInvalid: null });
     });
   });
 

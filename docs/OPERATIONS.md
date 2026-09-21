@@ -29,3 +29,23 @@ network access; use it to check the setup first.
 If the remote run fails: switch `CREATE_ONLY` in `worker/src/publish.ts` to the
 `If-None-Match: *` `Headers` form if that case passes, otherwise stop and redesign (a silent
 overwrite would break I4).
+
+## Event ingestion: queues and notification rule (M3, not yet run)
+
+The consumer in `worker/wrangler.jsonc` reads `r2notary-events` and its dead-letter queue
+`r2notary-events-dlq`. Both queues, and the R2 rule that feeds the first one, must exist before a
+deploy. Flags below were checked against `wrangler` 4.147.0 `--help` and the R2
+event-notification docs (2026-10-02). Bucket names are the committed placeholders.
+
+1. `npx wrangler queues create r2notary-events`
+2. `npx wrangler queues create r2notary-events-dlq`
+   (free plan: retention is fixed at 24 h, so a dead-lettered message that is not consumed within
+   a day is lost. The Worker consumes the DLQ itself; see DECISIONS D3.5.)
+3. One rule for both event types, on the **monitored** bucket only:
+   `npx wrangler r2 bucket notification create example-monitored-bucket --event-type object-create --event-type object-delete --queue r2notary-events --description r2notary`
+   Never create a rule on the log bucket: the consumer drops such events (I8), but each one still
+   costs a queue message. R2 rejects overlapping rules and allows at most 100 per bucket.
+
+Queues and notifications are billed per operation (check current Queues pricing). After the first
+real events arrive, check them against DECISIONS D3.7 (key encoding, ETag quoting, field set) and
+record the result there.
