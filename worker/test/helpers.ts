@@ -18,6 +18,14 @@ import type { LogBucket } from '../src/publish.ts';
 import { SequencerStore, type AppendItem } from '../src/store.ts';
 
 export const ORIGIN = env.LOG_ORIGIN;
+
+/**
+ * The test env with some vars replaced. `wrangler types` gives each var its committed literal type
+ * (PUBLIC_LOG: "false"), so a different value needs this one cast.
+ */
+export function envWith(vars: Partial<Record<keyof Env, string | undefined>>): Env {
+  return { ...env, ...vars } as unknown as Env;
+}
 export const BUCKET = env.MONITORED_BUCKET_NAME;
 
 let signerPromise: Promise<NoteSigner> | null = null;

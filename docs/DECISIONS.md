@@ -545,3 +545,182 @@ The docs give one example message. They do not say:
   `generateKey` inline.
 - **`PUBLIC_LOG`/auth on `/api/v1/status`** and the other routes: M4.
 - **Throughput of the consumer → Sequencer path:** a §14 benchmark (M7); no figure is claimed.
+
+## M4: Public read path + admin API (2026-10-02)
+
+Docs and specs checked for this milestone (2026-10-02): C2SP `tlog-tiles` (serving: origin,
+content types, caching, partial tiles, compression); R2 Workers API (`get`, `head`, `R2Object`);
+Workers Web Crypto (`timingSafeEqual`); Workers `Response` (`encodeBody`, Content-Length);
+Workers `Request` (`cf.clientAcceptEncoding`); Cache API; Workers Cache (overview, limitations);
+Cloudflare content compression; Workers limits (subrequests, memory); wrangler config schema
+(`cache`, `secrets`). Code: `worker/src/{index,api,auth,http,readpath}.ts`, `scripts/keygen.ts`.
+
+### D4.1 `LOG_ORIGIN` is the log's URL prefix (placeholder changed)
+
+- **Spec says:** "The origin line SHOULD be the schema-less URL prefix of the log with no trailing
+  slashes" (tlog-tiles).
+- **Problem:** the M0 placeholder `r2notary.example.com/example-log` does not match the route
+  layout in PLAN §5.5, which serves the log at `https://<host>/log/<name>/`.
+- **Decision:** the placeholder is now `r2notary.example.com/log/example-log`, and the test signing
+  key is named to match. It stays a SHOULD, not enforced: serving the bucket through an R2 custom
+  domain would make the prefix `<domain>/<name>`. `LOG_ORIGIN` is still validated by
+  `validateOrigin` (D1.10). Nothing has been published, so the change costs nothing now. After the
+  first real checkpoint it could not change without starting a new log.
+
+### D4.2 Two tokens: `ADMIN_TOKEN`, and a new `READ_TOKEN` for private logs
+
+- **Plan said:** `PUBLIC_LOG=false` "requires a bearer token on log routes too". It names no read
+  token, and §7 lists only `ADMIN_TOKEN`.
+- **Decision:** a separate `READ_TOKEN` secret. Handing readers the admin token would let them
+  publish and, after M6, start scans. With `PUBLIC_LOG=false` (the committed default, per sharp
+  edge 8), **every non-admin route** needs the read token or the admin token: log routes, `status`,
+  `lookup` and `findings`. Lookup and findings disclose key names, and one rule is easier to reason
+  about than a per-route list. Admin routes accept only `ADMIN_TOKEN`, on public logs too.
+- **Validation** (`parseAccess`): `PUBLIC_LOG` must be exactly `true` or `false`. Tokens must be at
+  least 32 characters of the RFC 6750 alphabet. `READ_TOKEN` is required only for a private log and
+  must differ from `ADMIN_TOKEN`.
+- **Parsed apart from `Config`:** only the fetch handler needs tokens. A missing token returns 500
+  from the HTTP routes but cannot stop ingest or publication. `secrets.required` lists
+  `SIGNING_KEY`, `ADMIN_TOKEN`, `READ_TOKEN`. Per the schema, that drives type generation and local
+  warnings only, so a public log can leave `READ_TOKEN` unset.
+- **Order of checks:** read routes check route (404), then method (405), then token (401), then
+  resource (404). Without a token, nobody learns which tiles exist. Admin routes check the token
+  **first**, so nothing about them (including which ops exist) is visible without it. Every
+  failure gives the same 401 (`WWW-Authenticate: Bearer realm="r2notary"`).
+
+### D4.3 Caching: Workers Cache exists and works on workers.dev; not enabled by default
+
+- **Plan said:** the Cache API may not work on `workers.dev`, so CDN caching needs a custom domain.
+- **Docs now say:** the Cache API is a no-op only in the dashboard editor and Playground previews.
+  Worker responses are **not** cached by the CDN automatically. A separate feature, **Workers
+  Cache** (`"cache": { "enabled": true }`, present in the wrangler 4.147 schema), serves cached
+  `GET`/`HEAD` responses without running the Worker. It works on `workers.dev`, follows
+  `Cache-Control` (RFC 9111), and never caches requests that carry `Authorization`.
+- **Decision:** do not enable it in the committed config, but make every response correct under it:
+  - errors (401, 404, 405, 500) and all JSON API answers are `no-store`. A cached 404 for a tile
+    requested just before publication would hide that tile for its lifetime;
+  - checkpoint: `public, max-age=2`; tiles, bundles and archived checkpoints:
+    `public, max-age=31536000, immutable`. Every resource except the live checkpoint is immutable
+    by path (D2.3), so long caching is safe;
+  - private logs send `private` instead of `public`. Their requests carry `Authorization`, which
+    Workers Cache bypasses anyway.
+- **Why not on:** the default log is private, where the cache never hits. For a public log it would
+  save R2 reads, but it has one sharp edge: switching a cached public log to private keeps serving
+  cached immutable resources without a token until they are purged. `docs/OPERATIONS.md` says how
+  to enable it, with that warning. Not tested: the test pool and `wrangler dev` do not show whether
+  Workers Cache is active.
+- **Alternative still open:** serving the log bucket through an R2 custom domain. Objects carry the
+  same content types and cache headers as stored metadata (D2.11).
+
+### D4.4 Constant-time token comparison, by construction
+
+- `tokensEqual` hashes both strings with SHA-256 and compares the two 32-byte digests with Workers'
+  `crypto.subtle.timingSafeEqual`. The docs do not say how that function treats unequal lengths;
+  comparing digests avoids the question. Neither the expected token's length nor where the first
+  difference falls affects the comparison. Hashing the presented token is linear in its own length,
+  which the client already knows. When several tokens are accepted, all are compared (no early
+  exit).
+- **Not measured.** PLAN M4 says "admin routes reject bad tokens in constant time". Timing cannot be
+  measured meaningfully in the test pool: Workers clocks are coarse and only advance on I/O. The
+  claim rests on the construction above. The tests check correctness: prefix, extension, case,
+  first and last character, empty, and 10,000 characters. A mutation that let the read token act as
+  the admin token was caught only after adding a private-log admin test.
+
+### D4.5 Read path details
+
+- **Strict names:** `/log/<name>/<path>` is served only if core's `parseLogPath` accepts `<path>`
+  as a canonical log path (D1.8). Objects stored under the prefix at other keys (M6's
+  `x-reports/`, stray files, non-canonical tile names) are not reachable, even when they exist
+  (tested by planting them).
+- **Archived checkpoints** (`x-checkpoints/<size>`) are served as immutable text. PLAN's route
+  table omits them, but §6 defines them and the M5 monitor and consistency checks will want them.
+- **Headers come from the resource kind**, not from the object's stored metadata: what is served
+  does not depend on how an object was written. All log responses, errors included, send
+  `Access-Control-Allow-Origin: *`, so a browser verifier can read 404s too. `OPTIONS` answers
+  preflights without a token (browsers send no credentials on a preflight) and allows the
+  `Authorization` header. `X-Content-Type-Options: nosniff` everywhere.
+- **HEAD** uses R2 `head()` and states `Content-Length` from the object size. For GET, the
+  runtime sets `Content-Length` itself from the R2 body (observed under `wrangler dev`).
+- **Superseded partial tiles stay.** tlog-tiles allows deleting a partial tile once its full tile
+  exists. Keeping them costs storage, but each stays valid and immutable.
+- Not supported: Range requests and conditional GETs (no `ETag`). Neither is in the spec or the plan.
+
+### D4.6 Entry bundles are gzip-encoded on request, negotiated on the client's real header
+
+- **Spec says:** entry bundles SHOULD be compressed at the HTTP layer; tiles are hashes and
+  incompressible.
+- **Decision:** when the client accepts gzip, bundle responses declare `Content-Encoding: gzip`.
+  The Workers runtime then compresses on the way out (`encodeBody: "automatic"`). Bundles always
+  send `Vary: Accept-Encoding`. Tiles are never encoded.
+- **Caught by the local run:** under `wrangler dev`, `curl -H 'Accept-Encoding: identity'` still
+  got gzip. The Workers Request docs explain it: Cloudflare rewrites the `Accept-Encoding` a Worker
+  sees to a canonical value and keeps the client's original in `request.cf.clientAcceptEncoding`.
+  Negotiation now reads that first and falls back to the header. After the fix, `wrangler dev`
+  returned identity bytes with an exact `Content-Length` for no header and for `identity`, and gzip
+  for `gzip`. A test pins this with a request whose header says `gzip, br` and whose
+  `cf.clientAcceptEncoding` says `identity`.
+- Cloudflare's compression docs say its proxy can also convert between encodings for the visitor.
+  The production behaviour is unverified until a deployment exists.
+
+### D4.7 Lookup
+
+- `GET /api/v1/lookup?key=K[&after=I][&limit=N]` returns
+  `{key, size, entries: [{index, entry}], next}`. `entry` is the parsed canonical JSON. Encoding is
+  canonical (D1.5), so it re-encodes to the exact leaf bytes, though a verifier should take bytes
+  from the bundle anyway. `size` is the published size the indexes were read at. Both values come
+  from one synchronous DO call, so every index is below it and its bundles exist. `next` is a cursor
+  for `after`.
+- Entries are read from the R2 bundles, since SQLite keeps only the current partial bundle (D2.2).
+  Bundles are read **one at a time**: a bundle can approach 16 MB, and an isolate has 128 MB.
+- **At most 32 bundles per page.** R2 calls count as subrequests, and the Free plan allows 50 per
+  invocation (Workers limits docs). A page that would need more stops early and returns a cursor.
+  The cap is injectable, so a test checks it with two bundles. Page size is at most 100.
+- The DO's `lookup` now takes `{after, limit}` and returns `{size, indexes}` (D2.7 said the shape
+  might change in M4).
+
+### D4.8 Findings and the M6 admin ops
+
+`GET /api/v1/findings` answers `{latestScan: null, findings: []}`. That is accurate, since no
+auditor exists yet; M6 fills it in. `POST /api/v1/admin/{backfill,scan}` exist, check the admin
+token, and return 501. `POST /api/v1/admin/publish` runs `Sequencer.publish()` (single-flight,
+D2.8) and returns its result.
+
+### D4.9 Errors
+
+The fetch handler catches everything and returns a bare `500 internal error` (`no-store`). The
+detail goes to the logs only: a config error names variables, and DO or R2 errors can name keys.
+Unknown paths are 404 (`no-store`), replacing M0's 501 stub.
+
+### D4.10 `scripts/keygen.ts`
+
+`npm run keygen -- --origin <LOG_ORIGIN> [--out worker/.dev.vars]` writes `SIGNING_KEY` (note
+signer key named after the origin), `ADMIN_TOKEN` and `READ_TOKEN` (32 random bytes, base64url),
+with the vkey as a comment, in `.dev.vars` format. `--out` creates the file with mode 0600 and
+refuses to overwrite one. Checked by hand: the written signer loads, its vkey matches the printed
+one, and a re-run refuses. It is a thin wrapper over core's `generateKey`, which has its own tests.
+
+### D4.11 Acceptance run and testing notes
+
+- **`curl` against `wrangler dev`** (2026-10-02, wrangler 4.147.0, local mode, private log with
+  keygen secrets passed as environment variables, not files). 300 simulated events, then
+  `POST /admin/publish`. Every log route returned the headers above. Without a token, with a wrong
+  token, and with the read token on an admin route: 401. A missing tile: 404 `no-store`. The
+  preflight returned 204. **Bytes were verified independently** with `packages/core`: the
+  checkpoint's signature and origin; tile `0/000` and `0/001.p/44` equal the leaf hashes of the
+  served bundles; tile `1/000.p/1` equals the root of tile `0/000`; the checkpoint root equals the
+  RFC 6962 root of all 300 served entries.
+- **Test hygiene:** a test that reads only a 200's headers must cancel its R2-backed body. Otherwise
+  `reset()` aborts the open stream and logs a `deleteAllDurableObjects()` exception.
+- **Mutation check:** each was caught after this milestone's tests were complete: reads open on a
+  private log (5 failures), the admin route accepting the read token (1, after adding a test),
+  serving non-canonical paths (1), cacheable 404s (15), no CORS (22), private responses marked
+  `public` (1), no gzip (1), negotiating on the rewritten header (1), no bundle cap (1), short
+  tokens accepted (2), the same token for both roles (1).
+
+### D4.12 Deferred from M4
+
+- **Go CLI support for private logs** (`--token` for log reads) is needed in M5. PLAN §5.7 has
+  no flag for it.
+- **Workers Cache and gzip behaviour in production**: no deployment (D4.3, D4.6).
+- **CORS on `/api/v1/`**: not in the plan. The M8 browser verifier may need it for `lookup`.
+- **Audit summary in `/status`** and real findings: M6.

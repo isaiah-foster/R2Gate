@@ -419,7 +419,7 @@ describe('queue handler end to end (real Sequencer)', () => {
     expect(await s.getObjectStates({ limit: 10 })).toMatchObject([
       { key: 'k', deleted: true, etag: null, size: null, seq: 0 },
     ]);
-    expect(await s.lookup('k')).toEqual([0, 1]); // log order is ingestion order
+    expect((await s.lookup('k')).indexes).toEqual([0, 1]); // log order is ingestion order
   });
 
   it('never logs events from the log bucket (I8)', async () => {
@@ -481,7 +481,9 @@ describe('GET /api/v1/status', () => {
       put('b', 'x', { bucket: LOG_BUCKET }),
     ]);
     const res = await exports.default.fetch(
-      new Request('https://r2notary.example.com/api/v1/status'),
+      new Request('https://r2notary.example.com/api/v1/status', {
+        headers: { authorization: `Bearer ${env.READ_TOKEN}` },
+      }),
     );
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/json; charset=utf-8');

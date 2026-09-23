@@ -16,6 +16,7 @@
     "test:contract:remote": "vitest run --config worker/vitest.remote.config.ts",
     "dev:sim": "wrangler dev -c worker/dev/wrangler.simulator.jsonc -c worker/wrangler.jsonc",
     "simulate": "node scripts/simulate-events.ts",
+    "keygen": "node scripts/keygen.ts",
     "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write .",

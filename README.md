@@ -2,7 +2,7 @@
 
 A verifiable, tamper-evident history for Cloudflare R2 buckets: every object change is recorded in a signed Merkle-tree transparency log that is stored in R2 itself, served as static tiles, and independently verifiable by a Go CLI.
 
-> **Status: M3 (ingest).** `packages/core` implements RFC 6962 hashing and consistency proofs, C2SP `tlog-tiles` tile math, paths and entry bundles, canonical-JSON log entries, and `signed-note` / `tlog-checkpoint` signing with Ed25519 (WebCrypto). The `Sequencer` Durable Object durably appends entries with dedupe, and publishes tiles, bundles and signed checkpoints to R2 in a crash-safe order. A Queue consumer validates R2 event notifications, drops events from the log bucket itself, and appends the rest; duplicate, reordered, malformed and dead-lettered messages are handled and counted in `GET /api/v1/status`. All of this is tested locally in workerd, including fault injection, and has run end to end under `wrangler dev` with synthetic events. Local only: nothing has run against real R2 or real event notifications yet, and the read path, the Go verifier and the auditor arrive in later milestones (see `PLAN.md` §9).
+> **Status: M4 (read path and API).** `packages/core` implements RFC 6962 hashing and consistency proofs, C2SP `tlog-tiles` tile math, paths and entry bundles, canonical-JSON log entries, and `signed-note` / `tlog-checkpoint` signing with Ed25519 (WebCrypto). The `Sequencer` Durable Object durably appends entries with dedupe, and publishes tiles, bundles and signed checkpoints to R2 in a crash-safe order. A Queue consumer validates R2 event notifications, drops events from the log bucket itself, and appends the rest. The Worker serves the log at `/log/<name>/` with tlog-tiles headers, CORS and gzip for entry bundles, plus a JSON API (`status`, `lookup`, `findings`) and a bearer-protected admin API. With `PUBLIC_LOG=false` (the default), reads need a token. All of this is tested locally in workerd, and has run end to end under `wrangler dev` with synthetic events, with the served bytes verified independently. Local only: nothing has run against real R2 or real event notifications yet, and the Go verifier and the auditor arrive in later milestones (see `PLAN.md` §9).
 
 ## What it will do
 
@@ -50,15 +50,18 @@ Local R2 does not emit event notifications, so a dev-only producer Worker
 (`worker/dev/simulator.ts`) puts synthetic ones on the local queue:
 
 ```sh
-export SIGNING_KEY=...   # a note signer key named after LOG_ORIGIN; scripts/keygen arrives in M4
+npm run keygen -- --origin r2notary.example.com/log/example-log --out worker/.dev.vars
 npm run dev:sim          # r2notary + the simulator in one wrangler dev process, port 8787
 npm run simulate -- --count 400 --duplicates 0.2 --shuffle 30 --malformed 12 --loop 5
-curl -s localhost:8787/api/v1/status
+export READ_TOKEN=...    # from worker/.dev.vars (the log is private by default)
+curl -s -H "Authorization: Bearer $READ_TOKEN" localhost:8787/api/v1/status
+curl -s -H "Authorization: Bearer $READ_TOKEN" localhost:8787/log/example-log/checkpoint
 ```
 
 The simulator prints the counters it expects (`accepted`, `duplicates`, `invalid`, ...); they
-should match the change in `/api/v1/status`. `npm run simulate` runs TypeScript directly, which
-needs Node ≥ 22.18.
+should match the change in `/api/v1/status`. The checkpoint verifies against the vkey that keygen
+printed. `npm run simulate` and `npm run keygen` run TypeScript directly, which needs
+Node ≥ 22.18.
 
 `npm run test:contract:remote` runs the R2 conditional-write contract against a real bucket. It is
 opt-in and billed; see `docs/OPERATIONS.md`.

@@ -469,12 +469,13 @@ export class SequencerStore {
     }));
   }
 
-  /** Log indexes of published entries naming `key`, oldest first. */
-  lookup(key: string, limit: number): number[] {
+  /** Log indexes of published entries naming `key` after index `after`, oldest first. */
+  lookup(key: string, after: number | null, limit: number): number[] {
     return this.#sql
       .exec<{ seq: number }>(
-        'SELECT seq FROM key_index WHERE key = ? ORDER BY seq LIMIT ?',
+        'SELECT seq FROM key_index WHERE key = ?1 AND (?2 IS NULL OR seq > ?2) ORDER BY seq LIMIT ?3',
         key,
+        after,
         limit,
       )
       .toArray()

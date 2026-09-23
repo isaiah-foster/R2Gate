@@ -5,10 +5,10 @@
   "compatibility_date": "2026-10-02",
 
   // Placeholders only: no account IDs, real bucket names or secrets belong here.
-  // SIGNING_KEY, ADMIN_TOKEN and ALERT_WEBHOOK_URL are secrets: `.dev.vars` locally,
-  // `wrangler secret put` remotely (see docs/OPERATIONS.md once written).
-  // ADMIN_TOKEN and ALERT_WEBHOOK_URL join `secrets.required` when M4/M6 use them.
-  "secrets": { "required": ["SIGNING_KEY"] },
+  // Secrets: `.dev.vars` locally (`npm run keygen`), `wrangler secret put` remotely
+  // (docs/OPERATIONS.md). READ_TOKEN is only used when PUBLIC_LOG is "false" (the default).
+  // ALERT_WEBHOOK_URL joins when M6 uses it.
+  "secrets": { "required": ["SIGNING_KEY", "ADMIN_TOKEN", "READ_TOKEN"] },
 
   "exports": {
     "Sequencer": { "type": "durable-object", "storage": "sqlite" },
@@ -48,8 +48,9 @@
 
   "vars": {
     "LOG_NAME": "example-log",
-    // scheme-less, no trailing slash (C2SP tlog-tiles origin)
-    "LOG_ORIGIN": "r2notary.example.com/example-log",
+    // The log's URL prefix without the scheme or a trailing slash (C2SP tlog-tiles SHOULD):
+    // this Worker serves the log at https://<host>/log/<LOG_NAME>/.
+    "LOG_ORIGIN": "r2notary.example.com/log/example-log",
     "MONITORED_BUCKET_NAME": "example-monitored-bucket",
     "LOG_BUCKET_NAME": "example-log-bucket",
     "CHECKPOINT_INTERVAL_MS": "5000",

@@ -2,9 +2,9 @@ import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
 describe('worker skeleton (runs inside workerd)', () => {
-  it('serves the stub fetch handler', async () => {
+  it('serves the fetch handler', async () => {
     const res = await exports.default.fetch(new Request('https://example.com/'));
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(404);
   });
 
   it('reaches the SQLite-backed Sequencer DO over RPC', async () => {

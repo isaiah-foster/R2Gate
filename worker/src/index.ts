@@ -1,70 +1,105 @@
+import { parseLogPath } from '@r2notary/core';
+import { READ_ROUTES, admin, readApi, type ApiDeps } from './api.ts';
+import { hasToken, parseAccess, type Access } from './auth.ts';
 import { parseConfig, type Config } from './config.ts';
+import { CORS_HEADERS, methodNotAllowed, notFound, text, unauthorized } from './http.ts';
 import { consumeBatch } from './ingest.ts';
+import { checkMethod, preflight, serveResource } from './readpath.ts';
 import type { Sequencer } from './sequencer.ts';
 
 export { Sequencer } from './sequencer.ts';
 export { ScanWorkflow } from './scan-workflow.ts';
 
-// Vars are fixed for the life of an isolate, so they are parsed once; a bad deployment fails on
-// its first request or batch instead of misbehaving.
-let config: Config | undefined;
+// Vars are fixed for the life of an isolate, so they are parsed once per env object; a bad
+// deployment fails on its first request or batch instead of misbehaving.
+const configs = new WeakMap<Env, Config>();
 function getConfig(env: Env): Config {
-  config ??= parseConfig(env);
-  return config;
+  let c = configs.get(env);
+  if (c === undefined) {
+    c = parseConfig(env);
+    configs.set(env, c);
+  }
+  return c;
+}
+
+// Access (tokens, PUBLIC_LOG) is parsed separately: only the fetch handler needs it.
+const accesses = new WeakMap<Env, Access>();
+function getAccess(env: Env): Access {
+  let a = accesses.get(env);
+  if (a === undefined) {
+    a = parseAccess(env);
+    accesses.set(env, a);
+  }
+  return a;
 }
 
 function sequencer(env: Env, cfg: Config): DurableObjectStub<Sequencer> {
   return env.SEQUENCER.getByName(cfg.logName);
 }
 
-const iso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
+/** Read access: anyone on a public log; the read or admin token on a private one. */
+function canRead(request: Request, access: Access): Promise<boolean> {
+  if (access.readToken === null) return Promise.resolve(true);
+  return hasToken(request, [access.readToken, access.adminToken]);
+}
+
+const LOG_PREFIX = '/log/';
+const API_PREFIX = '/api/v1/';
+const ADMIN_PREFIX = '/api/v1/admin/';
 
 /**
- * GET /api/v1/status (PLAN §5.5). Operational counters only; the log's contents are served by the
- * read path (M4). The last audit summary joins in M6.
+ * Routes (PLAN §5.5). Order of checks on each route: the path must be a real route (404), the
+ * method allowed (405), then the token (401), then the resource looked up (404). Admin routes
+ * check the token first, so nothing about them is visible without it.
  */
-async function status(env: Env, cfg: Config, head: boolean): Promise<Response> {
-  const s = await sequencer(env, cfg).status();
-  const body = {
-    log: cfg.logName,
-    origin: cfg.logOrigin,
-    size: s.publishedSize,
-    durableSize: s.durableSize,
-    pending: s.pending,
-    lastCheckpointAt: iso(s.lastPublishAt),
-    nextPublishAt: iso(s.alarmAt),
-    lastError: s.lastError,
-    ingest: {
-      ...s.ingest,
-      lastInvalid:
-        s.ingest.lastInvalid === null
-          ? null
-          : { at: iso(s.ingest.lastInvalid.at), reason: s.ingest.lastInvalid.reason },
-    },
-  };
-  return new Response(head ? null : `${JSON.stringify(body, null, 2)}\n`, {
-    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
-  });
+async function route(request: Request, env: Env): Promise<Response> {
+  const cfg = getConfig(env);
+  const access = getAccess(env);
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const deps: ApiDeps = { config: cfg, sequencer: sequencer(env, cfg), bucket: env.LOG };
+
+  if (path.startsWith(ADMIN_PREFIX)) {
+    if (!(await hasToken(request, [access.adminToken]))) return unauthorized();
+    return admin(path.slice(ADMIN_PREFIX.length), request, deps);
+  }
+
+  if (path.startsWith(API_PREFIX)) {
+    const name = path.slice(API_PREFIX.length);
+    if (!READ_ROUTES.includes(name)) return notFound();
+    if (request.method !== 'GET' && request.method !== 'HEAD') return methodNotAllowed('GET, HEAD');
+    if (!(await canRead(request, access))) return unauthorized();
+    return readApi(name, request, url, deps);
+  }
+
+  const logPrefix = `${LOG_PREFIX}${cfg.logName}/`;
+  if (path.startsWith(logPrefix)) {
+    const relative = path.slice(logPrefix.length);
+    const resource = parseLogPath(relative);
+    if (resource === null) return notFound(CORS_HEADERS);
+    const refused = checkMethod(request);
+    if (refused !== null) return refused;
+    if (request.method === 'OPTIONS') return preflight();
+    if (!(await canRead(request, access))) return unauthorized(CORS_HEADERS);
+    return serveResource(request, resource, `${cfg.logName}/${relative}`, {
+      bucket: env.LOG,
+      publicLog: access.publicLog,
+    });
+  }
+  return notFound(path.startsWith(LOG_PREFIX) ? CORS_HEADERS : {});
 }
 
 export default {
   async fetch(request, env): Promise<Response> {
-    const cfg = getConfig(env);
-    const { pathname } = new URL(request.url);
-    if (pathname === '/api/v1/status') {
-      if (request.method !== 'GET' && request.method !== 'HEAD') {
-        return new Response('method not allowed\n', {
-          status: 405,
-          headers: { allow: 'GET, HEAD', 'content-type': 'text/plain; charset=utf-8' },
-        });
-      }
-      return status(env, cfg, request.method === 'HEAD');
+    try {
+      return await route(request, env);
+    } catch (e) {
+      // Details go to the logs, not to the client (a config error names secrets' variables).
+      console.error(
+        `r2notary fetch failed: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`,
+      );
+      return text(500, 'internal error');
     }
-    // The log read path and the rest of the API land in M4.
-    return new Response('r2notary: not implemented yet\n', {
-      status: 501,
-      headers: { 'content-type': 'text/plain; charset=utf-8' },
-    });
   },
 
   async queue(batch, env): Promise<void> {

@@ -230,8 +230,9 @@ describe('objects view and key index', () => {
         deleted: false,
       },
     ]);
-    expect(await s.lookup('a')).toEqual([0, 1, 2]);
-    expect(await s.lookup('missing')).toEqual([]);
+    expect(await s.lookup('a')).toEqual({ size: 7, indexes: [0, 1, 2] });
+    expect((await s.lookup('a', { after: 0, limit: 1 })).indexes).toEqual([1]);
+    expect((await s.lookup('missing')).indexes).toEqual([]);
     expect(await s.getObjectStates({ after: 'a', through: 'b', limit: 10 })).toHaveLength(1);
     expect(await s.getObjectStates({ after: 'a', limit: 1 })).toMatchObject([{ key: 'b' }]);
     await runInDurableObject(s, (instance) => {
@@ -278,7 +279,7 @@ describe('objects view and key index', () => {
     expect(await s.getObjectStates({ limit: 10 })).toMatchObject([
       { key: 'k', etag: 'snap-etag', size: 9, seq: 0, deleted: false },
     ]);
-    expect(await s.lookup('k')).toEqual([0, 1]);
+    expect((await s.lookup('k')).indexes).toEqual([0, 1]);
   });
 });
 

@@ -40,6 +40,7 @@ npm run format:check         # prettier (npm run format to fix)
 npx wrangler types           # run in worker/ after editing wrangler.jsonc
 npm run dev:sim              # local wrangler dev: r2notary + dev-only event simulator (needs SIGNING_KEY)
 npm run simulate -- --help   # send synthetic R2 notifications to dev:sim; compare /api/v1/status
+npm run keygen -- --origin <LOG_ORIGIN> --out worker/.dev.vars   # local secrets (gitignored)
 
 cd cli && go vet ./... && go test ./...
 cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI runs
@@ -78,4 +79,10 @@ cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI r
   fields in R2 messages are ignored, documented ones are strict (D3.2). The test pool's
   `retryAll()` drops its options (D3.8). A Worker module may export only handlers/classes (workerd
   refuses plain constants), which tests don't catch; `npm run dev:sim` does.
+- HTTP (M4): every response sets Cache-Control explicitly (errors/API `no-store`), so it stays
+  correct if Workers Cache is enabled (D4.3). Private logs (default) need READ_TOKEN on all
+  non-admin routes; admin checks its token before routing (D4.2). Negotiate encodings on
+  `request.cf.clientAcceptEncoding`, not the rewritten header (D4.6). Tests that read only headers
+  of an R2-backed 200 must `body.cancel()`, or `reset()` logs exceptions. Override typed vars in
+  tests with `envWith()` (wrangler types vars as literals).
 - Commit trailer: end commits with the attribution line the harness specifies.

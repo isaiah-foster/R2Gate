@@ -49,3 +49,29 @@ event-notification docs (2026-10-02). Bucket names are the committed placeholder
 Queues and notifications are billed per operation (check current Queues pricing). After the first
 real events arrive, check them against DECISIONS D3.7 (key encoding, ETag quoting, field set) and
 record the result there.
+
+## Secrets (M4, not yet run)
+
+Generate them locally, then put each one. The values never go in the repository.
+
+1. `npm run keygen -- --origin r2notary.example.com/log/example-log --out r2notary.secrets`
+   (use the real `LOG_ORIGIN`; the file is created mode 0600 and must not be committed)
+2. For each of `SIGNING_KEY`, `ADMIN_TOKEN` and `READ_TOKEN`:
+   `npx wrangler secret put <NAME> -c worker/wrangler.jsonc` and paste the value.
+   `READ_TOKEN` is only used when `PUBLIC_LOG` is `"false"` (the committed default).
+3. Publish the vkey (the comment line in the file) wherever clients will find it, then delete the
+   file or move it to a password manager.
+
+Locally, `--out worker/.dev.vars` does the same for `wrangler dev` (`.dev.vars` is gitignored).
+
+## Caching a public log (optional, not enabled)
+
+For `PUBLIC_LOG="true"`, Workers Cache can serve tiles and bundles at the edge without running the
+Worker or reading R2: add `"cache": { "enabled": true }` to `worker/wrangler.jsonc` (DECISIONS
+D4.3). Every response already states its caching: immutable resources for a year, the checkpoint
+for 2 s, errors and API answers never.
+
+**Before switching a cached log from public to private, purge the Worker's cache.** Cached
+immutable resources would otherwise keep being served without a token. Requests with an
+`Authorization` header always bypass the cache, so a log that has always been private is
+unaffected.

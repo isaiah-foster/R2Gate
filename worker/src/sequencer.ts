@@ -35,6 +35,17 @@ export interface SequencerStatus {
   readonly ingest: IngestCounters;
 }
 
+export interface LookupOptions {
+  /** Exclusive lower bound on the index (a cursor from the previous page). */
+  readonly after?: number;
+  readonly limit?: number;
+}
+
+export interface LookupResult {
+  readonly size: number;
+  readonly indexes: number[];
+}
+
 export class AppendError extends Error {
   override name = 'AppendError';
 }
@@ -244,8 +255,24 @@ export class Sequencer extends DurableObject<Env> {
     return this.#store.objectStates(range);
   }
 
-  /** Log indexes of published entries for `key` (unverified; clients check inclusion proofs). */
-  lookup(key: string): number[] {
-    return this.#store.lookup(key, MAX_RANGE_LIMIT);
+  /**
+   * Log indexes of published entries for `key`, after index `after` (unverified; clients check
+   * inclusion proofs). `size` is the published size they were read at: every index is below it,
+   * and its bundles are in R2.
+   */
+  lookup(key: string, options: LookupOptions = {}): LookupResult {
+    const limit = options.limit ?? MAX_RANGE_LIMIT;
+    const after = options.after ?? null;
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RANGE_LIMIT) {
+      throw new RangeError(`limit must be 1..${String(MAX_RANGE_LIMIT)}`);
+    }
+    if (after !== null && (!Number.isSafeInteger(after) || after < 0)) {
+      throw new RangeError('after must be a non-negative integer');
+    }
+    // Both reads are synchronous, so no publication can commit between them.
+    return {
+      size: this.#store.publishedSize(),
+      indexes: this.#store.lookup(key, after, limit),
+    };
   }
 }
