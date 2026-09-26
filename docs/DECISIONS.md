@@ -724,3 +724,138 @@ one, and a re-run refuses. It is a thin wrapper over core's `generateKey`, which
 - **Workers Cache and gzip behaviour in production**: no deployment (D4.3, D4.6).
 - **CORS on `/api/v1/`**: not in the plan. The M8 browser verifier may need it for `lookup`.
 - **Audit summary in `/status`** and real findings: M6.
+
+## M5: Go verifier + conformance (2026-10-02)
+
+Docs and APIs checked for this milestone (2026-10-02): `golang.org/x/mod` v0.41.0 `sumdb/tlog` and
+`sumdb/note` (pkg.go.dev, and the module source for `TileHashReader`, `ProveTree` and
+`GenerateKey`); Workers secrets and environment-variables docs; wrangler 4.147 `dev --help` and its
+source for `--env-file`. Code: `cli/` (`cmd/r2notary`, `internal/{verr,tilefetch,verify,entry,
+monitor,testlog}`), `scripts/conformance.ts`, the `conformance` CI job.
+
+### D5.1 Verifier structure: Go's `tlog` does the proofs, tlog-tiles paths are ours
+
+- `tilefetch` maps `tlog.Tile{H: 8, L, N, W}` onto `tile/<L>/<N>[.p/<W>]` and fetches over HTTP.
+  `tlog.Tile.Path()` is the checksum database's layout (`tile/8/<L>/...`), as PLAN §5.7 warned. The
+  index encoding is tested against the spec examples and against Go's own encoding over many
+  values.
+- `verify` reads hashes only through `tlog.TileHashReader`, which authenticates every tile against
+  the signed root before any hash is used (frontier tiles against the root, then full tiles
+  against their parents). Inclusion is `ProveRecord`/`CheckRecord` and consistency is
+  `ProveTree`/`CheckTree`. Both are computed locally from tiles; the server is never asked for a
+  proof.
+- Authenticated tiles are cached in memory for one process. They are re-authenticated on every
+  use, so the cache only saves downloads. Full level-0 tiles are not cached: a scan reads each one
+  once, and keeping them would grow with the log.
+- **No code shared with TS** (PLAN G3). The Go tests use their own log writer (`internal/testlog`),
+  built on `tlog.StoredHashes`/`NewTiles`/`ReadTileData`, so the Go side is tested against a
+  second, independent writer as well as the TS one.
+
+### D5.2 Exit codes: evidence versus outage
+
+0 ok · 1 verification failed · 2 usage · 3 verified but negative (no entry for `--key`/`--index`,
+or a `--watch` alert with `--once`) · 4 could not verify (network, HTTP status, local files).
+Anything wrong that was _received_ (bad signature, a tile or bundle that does not match the signed
+tree, wrong sizes, an inconsistent or smaller checkpoint) is a `verr.Failure`, exit 1. A 404 for a
+needed resource is exit 4: it breaks I2, but nothing false was accepted, and a monitoring system
+should be able to tell "the log lied" from "the log is unreachable". The conformance harness
+checks both.
+
+### D5.3 Signatures must be canonical base64 (Go's `note` is lenient)
+
+The bit-flip test found that `note.Open` decodes signatures with lenient base64. It ignores the
+unused low bits of the last character, so flipping one of them still verified. Nothing was
+forged, since the decoded signature is identical, but one checkpoint then had several valid
+encodings. The TS side already rejects that (D1.9). The CLI now re-encodes each verified signature
+and rejects any that is not canonical.
+
+### D5.4 Bundles are verified whole
+
+Every scan (`monitor`, `inclusion --key` without `--api`) compares each entry of every bundle it
+touches with the leaf hashes from the authenticated level-0 tile, and parses bundles strictly
+(exact width, no trailing bytes). So a flipped bit anywhere in a bundle is caught, not only in the
+requested entry. Go test: a flipped bit (first, middle, last) or a one-byte resize of every
+resource of a 700-entry tree is a verification failure.
+
+### D5.5 CLI surface beyond PLAN §5.7
+
+- **Private logs:** the token comes from `$R2NOTARY_TOKEN` or `--token-file`, not a flag, to keep
+  it out of shell history and process listings (D4.12). Go's HTTP client drops `Authorization` on
+  redirects to another host.
+- `--vkey @FILE`; `--origin` (default: the vkey's name, because R2Notary names its key after the
+  origin, D1.10); `checkpoint --out` (saves the verified note for `consistency --old`);
+  `consistency --new FILE` (prove one saved checkpoint extends another, used for pairwise I3);
+  `monitor --once` and `-q`; `keygen --out` (created 0600, never overwritten).
+  `note.GenerateKey` does not validate the name, so keygen loads both keys back to check it.
+- **`inclusion --key`** scans and verifies the whole log by default: it cannot be lied to, but it
+  reads everything. With `--api https://host` it takes only the _indexes_ from `/api/v1/lookup`
+  and proves each one. An index beyond the checkpoint, or one whose entry names another key, is a
+  failure. The API can still omit entries, and the CLI says so.
+- **Output:** entries are printed as `{"index":N,"entry":<exact committed bytes>}`, built by hand
+  because `json.Marshal` HTML-escapes `<`, `>` and `&`. The conformance harness compares these
+  bytes with what TS wrote.
+- **`checkpoint` prints no time.** The plan says "print size/root/time", but the checkpoint format
+  has no timestamp and R2Notary writes no extension lines. Signed times come with witness
+  cosignatures (M8).
+- **Deferred:** `findings --api` (M6: there is no auditor yet, and the route returns an empty
+  list, D4.8).
+
+### D5.6 Monitor semantics
+
+- State = the last verified checkpoint's signed note (kept as evidence) plus, with `--watch`, the
+  live keys under the prefix. It is saved atomically (temporary file, fsync, rename), and only
+  after every new entry has verified. A missing state file means a new monitor, which verifies the
+  log from entry 0 (no trust on first use beyond the vkey). A saved checkpoint that no longer
+  verifies is a local error (exit 4), not blamed on the log.
+- Each poll: verify the checkpoint, prove consistency from the saved one (a smaller size or the
+  same size with another root is a rollback or fork, exit 1, and both signed notes are printed as
+  evidence), then verify and print the new entries. In loop mode, network errors are logged and
+  retried; any failure exits.
+- `--watch PREFIX`, in log order: a delete under the prefix alerts; a put, copy or multipart
+  completion of a key the log shows as live alerts as an overwrite; a backfill snapshot marks a
+  key live without alerting. The prefix must match the state that built the live set, and a watch
+  cannot be added to a state that did not track one. Unknown types and versions are printed and
+  otherwise ignored (PLAN §5.2).
+
+### D5.7 Conformance harness (`npm run conformance`, CI job `conformance`)
+
+- **Writer:** the real Worker and Sequencer under `wrangler dev` (simulator + r2notary, as
+  `npm run dev:sim`), private log, local only. Synthetic events from the M3 generator (seed 5, 40
+  keys, including the Unicode/space/quote/`|`/emoji keys) are published through the admin API at
+  sizes 1, 255, 256, 257, 512, 513, 1000 and 1300. `CHECKPOINT_INTERVAL_MS` is an hour, so the
+  alarm never publishes and every size is known. **The signing key comes from the Go CLI's
+  `keygen`**: TS signs with a Go-generated key and Go verifies, which tests the key format in the
+  direction D1.4 had only argued.
+- **Against the live read path** (token, gzip-encoded bundles): checkpoint and origin (I9; a
+  different expected origin and a same-name foreign vkey are rejected; no token gives 401 / exit 4);
+  a full monitor scan whose 1,300 printed entries must equal the bytes TS decodes from the bundles;
+  inclusion at tile-boundary indexes; `--key` for six keys by scan and by lookup API, matching
+  TS-computed indexes; `--watch sim/1` alert count equal to an independent TS implementation of
+  the same rule; consistency for all 36 ordered pairs of archived checkpoints (I3 in Go), and a
+  rollback pair rejected.
+- **Corruption (I7):** every resource of every archived size (34) is mirrored and served by a
+  plain HTTP server. A replayed monitor steps through the archived checkpoints in order, as one
+  would have seen the log grow. Uncorrupted, it passes. For each resource, three bits (first,
+  middle, last) are flipped one at a time: all 102 replays end with exit 1. For each archived
+  checkpoint, a flipped signature bit (re-encoded as valid base64) and a valid signature from
+  another key with the same name both fail at that size. A missing tile and a missing bundle end
+  with exit 4.
+- **Mutation check:** with the Go bundle-hash comparison and the origin check disabled, the harness
+  reported every bundle bit flip and the I9 origin case. With the code restored, all 200 checks
+  pass (about 45 s locally).
+- **`--env-file` (wrangler source, docs silent):** with `--env-file`, `.dev.vars` is not read, so
+  a developer's local secrets cannot leak in. File values override `vars` keys and fill required
+  secrets. Because the config declares `secrets`, wrangler also merges `process.env`, so the
+  harness removes every config key from the child's environment. The harness also uses a random
+  port, inspector port and `--persist-to` directory, and kills the whole process group when done.
+- **Not covered cross-language:** a full level-1 tile (65,536 entries) and level-2 tiles. Feeding
+  65k events through local queues would make CI slow. Those sizes are covered by core I1 tests (TS)
+  and the Go inclusion tests up to 70,000 entries (`testlog`), and both implement the same
+  tlog-tiles layout that the harness checks at levels 0-1.
+
+### D5.8 Deferred from M5
+
+- **CI not observed running** (D0.8 still holds: nothing has been pushed). Every CI step, the new
+  conformance job included, was run locally.
+- **Third-party tlog-tiles client** (PLAN §10, optional): not tried.
+- **`findings` command:** M6.

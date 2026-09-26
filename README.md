@@ -2,7 +2,7 @@
 
 A verifiable, tamper-evident history for Cloudflare R2 buckets: every object change is recorded in a signed Merkle-tree transparency log that is stored in R2 itself, served as static tiles, and independently verifiable by a Go CLI.
 
-> **Status: M4 (read path and API).** `packages/core` implements RFC 6962 hashing and consistency proofs, C2SP `tlog-tiles` tile math, paths and entry bundles, canonical-JSON log entries, and `signed-note` / `tlog-checkpoint` signing with Ed25519 (WebCrypto). The `Sequencer` Durable Object durably appends entries with dedupe, and publishes tiles, bundles and signed checkpoints to R2 in a crash-safe order. A Queue consumer validates R2 event notifications, drops events from the log bucket itself, and appends the rest. The Worker serves the log at `/log/<name>/` with tlog-tiles headers, CORS and gzip for entry bundles, plus a JSON API (`status`, `lookup`, `findings`) and a bearer-protected admin API. With `PUBLIC_LOG=false` (the default), reads need a token. All of this is tested locally in workerd, and has run end to end under `wrangler dev` with synthetic events, with the served bytes verified independently. Local only: nothing has run against real R2 or real event notifications yet, and the Go verifier and the auditor arrive in later milestones (see `PLAN.md` §9).
+> **Status: M5 (MVP: Go verifier and conformance).** `packages/core` implements RFC 6962 hashing and consistency proofs, C2SP `tlog-tiles` tile math, paths and entry bundles, canonical-JSON log entries, and `signed-note` / `tlog-checkpoint` signing with Ed25519 (WebCrypto). The `Sequencer` Durable Object durably appends entries with dedupe, and publishes tiles, bundles and signed checkpoints to R2 in a crash-safe order. A Queue consumer validates R2 event notifications, drops events from the log bucket itself, and appends the rest. The Worker serves the log at `/log/<name>/` with tlog-tiles headers, CORS and gzip for entry bundles, plus a JSON API (`status`, `lookup`, `findings`) and a bearer-protected admin API. With `PUBLIC_LOG=false` (the default), reads need a token. All of this is tested locally in workerd, and has run end to end under `wrangler dev` with synthetic events, with the served bytes verified independently. The Go CLI (`cli/`, no code shared with the writer) verifies checkpoints, inclusion and consistency from tiles, and monitors a log for rollbacks, forks and deletes under a protected prefix. A conformance harness runs the real Worker locally, verifies its log with the Go CLI, then flips bits in every published resource and requires the CLI to reject each one. Local only: nothing has run against real R2 or real event notifications yet, and the auditor arrives in M6 (see `PLAN.md` §9).
 
 ## What it will do
 
@@ -41,6 +41,8 @@ npm run lint
 npm run typecheck
 npm run format:check
 
+npm run conformance # TS writer under wrangler dev -> Go verifier, plus corruption cases
+
 cd cli && go vet ./... && go test ./...
 ```
 
@@ -59,8 +61,21 @@ curl -s -H "Authorization: Bearer $READ_TOKEN" localhost:8787/log/example-log/ch
 ```
 
 The simulator prints the counters it expects (`accepted`, `duplicates`, `invalid`, ...); they
-should match the change in `/api/v1/status`. The checkpoint verifies against the vkey that keygen
-printed. `npm run simulate` and `npm run keygen` run TypeScript directly, which needs
+should match the change in `/api/v1/status`. Then verify the log with the Go CLI, using the vkey
+that keygen printed (`cd cli && go build -o r2notary ./cmd/r2notary` first):
+
+```sh
+export R2NOTARY_TOKEN=$READ_TOKEN ADMIN_TOKEN=... VKEY='r2notary.example.com/log/example-log+...'
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" localhost:8787/api/v1/admin/publish
+./r2notary checkpoint --log http://localhost:8787/log/example-log --vkey "$VKEY" --out old.cp
+./r2notary inclusion  --log http://localhost:8787/log/example-log --vkey "$VKEY" --index 0
+./r2notary monitor    --log http://localhost:8787/log/example-log --vkey "$VKEY" --state mon.json --once
+# after more events and a publish:
+./r2notary consistency --log http://localhost:8787/log/example-log --vkey "$VKEY" --old old.cp
+```
+
+Exit codes: 0 ok, 1 verification failed (the log served data that does not verify), 2 usage,
+3 negative answer (no such entry, or a `--watch` alert), 4 could not verify (network, HTTP). `npm run simulate` and `npm run keygen` run TypeScript directly, which needs
 Node ≥ 22.18.
 
 `npm run test:contract:remote` runs the R2 conditional-write contract against a real bucket. It is

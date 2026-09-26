@@ -41,6 +41,7 @@ npx wrangler types           # run in worker/ after editing wrangler.jsonc
 npm run dev:sim              # local wrangler dev: r2notary + dev-only event simulator (needs SIGNING_KEY)
 npm run simulate -- --help   # send synthetic R2 notifications to dev:sim; compare /api/v1/status
 npm run keygen -- --origin <LOG_ORIGIN> --out worker/.dev.vars   # local secrets (gitignored)
+npm run conformance          # M5: wrangler dev writer -> Go verifier + corruption (~1 min; --keep)
 
 cd cli && go vet ./... && go test ./...
 cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI runs
@@ -85,4 +86,10 @@ cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI r
   `request.cf.clientAcceptEncoding`, not the rewritten header (D4.6). Tests that read only headers
   of an R2-backed 200 must `body.cancel()`, or `reset()` logs exceptions. Override typed vars in
   tests with `envWith()` (wrangler types vars as literals).
+- Go CLI (M5): exit 1 = verification failure (`verr.Failure`, evidence), 4 = could not verify
+  (`tilefetch.FetchError`, e.g. 404); keep that split when adding checks. Tiles are authenticated
+  only through `tlog.TileHashReader`; `tlog.Tile.Path()` is not the tlog-tiles layout (use
+  `tilefetch.TilePath`). Go tests build logs with `internal/testlog` (Go-only writer). The
+  conformance harness passes secrets with `wrangler dev --env-file` (skips `.dev.vars`; process env
+  is merged too, so it strips config keys from the child env, D5.7).
 - Commit trailer: end commits with the attribution line the harness specifies.
