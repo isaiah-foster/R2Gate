@@ -86,6 +86,10 @@ const ARCHIVE_METADATA: R2HTTPMetadata = {
   contentType: 'text/plain; charset=utf-8',
   cacheControl: 'public, max-age=31536000, immutable',
 };
+const REPORT_METADATA: R2HTTPMetadata = {
+  contentType: 'application/json; charset=utf-8',
+  cacheControl: 'public, max-age=31536000, immutable',
+};
 const CHECKPOINT_METADATA: R2HTTPMetadata = {
   contentType: 'text/plain; charset=utf-8',
   cacheControl: 'max-age=2',
@@ -101,17 +105,23 @@ function noteText(note: Uint8Array): string {
 /**
  * Writes `data` at `key` only if nothing is there. If something is, it must be identical, or this
  * throws LogDivergenceError. For archived checkpoints only the signed text is compared, so a key
- * rotation between a crash and its retry does not count as divergence (D2.5).
+ * rotation between a crash and its retry does not count as divergence (D2.5). Audit reports
+ * (`x-reports/`, M6) are compared byte for byte like tiles.
  */
 export async function putImmutable(
   bucket: LogBucket,
   key: string,
   data: Uint8Array,
-  kind: 'tile' | 'checkpoint' = 'tile',
+  kind: 'tile' | 'checkpoint' | 'report' = 'tile',
 ): Promise<'created' | 'existed'> {
+  const metadata = {
+    tile: IMMUTABLE_METADATA,
+    checkpoint: ARCHIVE_METADATA,
+    report: REPORT_METADATA,
+  };
   const created = await bucket.put(key, data, {
     onlyIf: CREATE_ONLY,
-    httpMetadata: kind === 'tile' ? IMMUTABLE_METADATA : ARCHIVE_METADATA,
+    httpMetadata: metadata[kind],
     // R2 rejects the upload if the received bytes do not hash to this.
     sha256: toHex(await sha256(data)),
   });
@@ -121,7 +131,7 @@ export async function putImmutable(
     throw new ConditionalWriteError(`create-only put of ${key} failed, but the object is absent`);
   }
   const bytes = new Uint8Array(await existing.arrayBuffer());
-  const same = kind === 'tile' ? bytesEqual(bytes, data) : noteText(bytes) === noteText(data);
+  const same = kind === 'checkpoint' ? noteText(bytes) === noteText(data) : bytesEqual(bytes, data);
   if (!same) throw new LogDivergenceError(key);
   return 'existed';
 }

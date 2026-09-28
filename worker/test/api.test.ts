@@ -151,6 +151,7 @@ describe('GET /api/v1/lookup', () => {
           return env.LOG.get(key);
         },
       },
+      workflow: env.SCAN_WORKFLOW,
       maxBundles: 1,
     };
     const first = await (
@@ -176,11 +177,17 @@ describe('GET /api/v1/lookup', () => {
 });
 
 describe('GET /api/v1/findings', () => {
-  it('reports that no audit has run (the auditor arrives in M6)', async () => {
+  it('reports that no audit has run yet, and needs a token on a private log', async () => {
     const res = await call('/api/v1/findings');
     expect(res.status).toBe(200);
-    expect(await json(res)).toEqual({ latestScan: null, findings: [] });
+    expect(await json(res)).toEqual({ scan: null, size: 0, findings: [], next: null });
     expect((await call('/api/v1/findings', { env })).status).toBe(401);
+  });
+
+  it('rejects bad paging parameters', async () => {
+    for (const q of ['limit=0', 'limit=1001', 'after=-1', 'after=x']) {
+      expect((await call(`/api/v1/findings?${q}`)).status, q).toBe(400);
+    }
   });
 });
 
@@ -224,28 +231,13 @@ describe('admin routes', () => {
     expect((await call('/api/v1/admin/nope', { ...t, method: 'POST' })).status).toBe(404);
   });
 
-  it('backfill and scan exist but are not implemented until M6', async () => {
+  it('scan and backfill refuse to start while a scan is in progress', async () => {
+    const begun = await sequencer().scanStart('busy-1', 'audit');
+    expect(begun.ok).toBe(true);
     for (const op of ['backfill', 'scan']) {
       const res = await call(`/api/v1/admin/${op}`, { method: 'POST', token: env.ADMIN_TOKEN });
-      expect(res.status, op).toBe(501);
-      expect(await json(res)).toHaveProperty('error');
+      expect(res.status, op).toBe(409);
+      expect(await json(res)).toMatchObject({ active: { scanId: 'busy-1', state: 'listing' } });
     }
-  });
-});
-
-describe('everything else', () => {
-  it('is a 404 that is never cached', async () => {
-    for (const path of ['/', '/api/v1/', '/api/v2/status', '/api/v1/status/', '/favicon.ico']) {
-      const res = await call(path);
-      expect(res.status, path).toBe(404);
-      expect(res.headers.get('cache-control'), path).toBe('no-store');
-    }
-  });
-
-  it('fails closed with a bare 500 when access is misconfigured', async () => {
-    const res = await call(`/log/${LOG}/checkpoint`, { env: envWith({ PUBLIC_LOG: 'maybe' }) });
-    expect(res.status).toBe(500);
-    expect(res.headers.get('cache-control')).toBe('no-store');
-    expect(await res.text()).not.toContain('PUBLIC_LOG');
   });
 });

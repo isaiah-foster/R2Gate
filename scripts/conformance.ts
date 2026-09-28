@@ -15,6 +15,10 @@
 //      scan whose entries must equal what TypeScript decodes from the bundles, inclusion by index,
 //      by key (scan and lookup API), --watch alerts, and consistency between every pair of
 //      archived checkpoints (I3, Go side).
+//   3b. Run an audit through the admin API (a local Workflow). The local monitored bucket is
+//      empty, so every key the log shows as live must be reported MISSING_OBJECT. The Go CLI's
+//      `findings` proves each finding and checks their number against the scan's signed end
+//      entry; the log must stay consistent with the archived checkpoints after the audit.
 //   4. Mirror every resource of every archived size, serve the mirror from a plain HTTP server, and
 //      replay a monitor across the archived checkpoints in order. Uncorrupted, every step passes.
 //      With one bit flipped in any tile, bundle or archived checkpoint, or a forged signature,
@@ -239,6 +243,8 @@ async function main(): Promise<void> {
       `READ_TOKEN=${readToken}`,
       'CHECKPOINT_INTERVAL_MS=3600000',
       'BATCH_MAX_ENTRIES=1000',
+      // The simulated events are hours old, but the scan runs immediately after publication.
+      'AUDIT_GRACE_SECONDS=0',
       '',
     ].join('\n'),
     { mode: 0o600 },
@@ -297,7 +303,12 @@ async function main(): Promise<void> {
     await sleep(500);
   }
 
-  const { messages } = simulate({ count: SIZES.at(-1) ?? 0, bucket: BUCKET, seed: 5, keys: 40 });
+  const { messages, manifest } = simulate({
+    count: SIZES.at(-1) ?? 0,
+    bucket: BUCKET,
+    seed: 5,
+    keys: 40,
+  });
   let published = 0;
   for (const size of SIZES) {
     const batch = messages.slice(published, size);
@@ -493,6 +504,59 @@ async function main(): Promise<void> {
   ]);
   check(back.code === EXIT.failure, 'consistency 1000 -> 257 (a rollback) is rejected');
   step(`consistency verified for all ${String(pairs)} pairs of archived checkpoints`);
+
+  // 3b. The auditor, end to end.
+  step('running an audit (local Workflow) and verifying its findings with the Go CLI');
+  const liveKeys = manifest.objects
+    .filter((o) => !o.deleted)
+    .map((o) => o.key)
+    .sort();
+  const started = await fetch(`${base}/api/v1/admin/scan`, {
+    method: 'POST',
+    headers: auth(adminToken),
+  });
+  check(started.status === 202, `admin scan: HTTP ${String(started.status)}`);
+  const { scanId } = (await started.json()) as { scanId: string };
+  interface AuditView {
+    readonly scan: { scanId: string; state: string; findings: number } | null;
+  }
+  let audit: AuditView = { scan: null };
+  for (let i = 0; audit.scan?.scanId !== scanId || audit.scan.state !== 'done'; i++) {
+    if (i > 240) throw new Error(`audit ${scanId} did not finish: ${JSON.stringify(audit)}`);
+    await sleep(500);
+    const res = await fetch(`${base}/api/v1/findings?limit=1`, { headers: auth(readToken) });
+    audit = (await res.json()) as AuditView;
+  }
+  check(
+    audit.scan.findings === liveKeys.length,
+    `audit reports ${String(audit.scan.findings)} findings for ${String(liveKeys.length)} live keys`,
+  );
+  const verified = await go(['findings', '--api', base, ...logFlags]);
+  check(verified.code === EXIT.ok, `findings: ${verified.stderr.trim()}`);
+  check(
+    verified.stderr.includes('confirms the count'),
+    'the number of findings matches the signed audit.scan end entry',
+  );
+  const found = [...printedEntries(verified.stdout).values()].map(
+    (e) => JSON.parse(e) as { kind: string; key: string; scanId: string },
+  );
+  check(
+    found.every((f) => f.kind === 'MISSING_OBJECT' && f.scanId === scanId) &&
+      JSON.stringify(found.map((f) => f.key).sort()) === JSON.stringify(liveKeys),
+    'every live key is a proven MISSING_OBJECT finding of this scan',
+  );
+  const extended = await go(['consistency', '--old', archiveFile(final), ...logFlags]);
+  check(extended.code === EXIT.ok, `the audited log extends checkpoint ${String(final)}`);
+  const tail = await go([
+    'monitor',
+    '--once',
+    '-q',
+    '--state',
+    join(tmp, 'live-monitor.json'),
+    ...logFlags,
+  ]);
+  check(tail.code === EXIT.ok, `monitor verifies the auditor's entries: ${tail.stderr.trim()}`);
+  step(`audit ${scanId}: ${String(found.length)} findings proven by the Go CLI`);
   stopWrangler();
 
   // 4. Corruption, against a static mirror.

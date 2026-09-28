@@ -1,7 +1,18 @@
-import { decodeEntry, newSigner, type NoteSigner } from '@r2notary/core';
+import { decodeEntry, newSigner, utf8Encode, type NoteSigner } from '@r2notary/core';
 import { DurableObject } from 'cloudflare:workers';
+import {
+  AuditStore,
+  type ConfirmResult,
+  type Outcome,
+  type PageRequest,
+  type PageResult,
+  type ScanContext,
+  type ScanMode,
+  type ScanSummary,
+  type ScrubObservation,
+} from './audit/store.ts';
 import { parseConfig, type Config } from './config.ts';
-import { publish, type PublishResult } from './publish.ts';
+import { publish, putImmutable, type PublishResult } from './publish.ts';
 import {
   SCHEMA_VERSION,
   SequencerStore,
@@ -33,6 +44,16 @@ export interface SequencerStatus {
   readonly lastError: string | null;
   readonly alarmAt: number | null;
   readonly ingest: IngestCounters;
+  /** The most recent audit scan (M6), in any state. */
+  readonly audit: ScanSummary | null;
+}
+
+export interface FindingsPage {
+  /** The most recent audit scan whose findings these are, or null if none has run. */
+  readonly scan: ScanSummary | null;
+  /** Published size when read: indexes below it are covered by the live checkpoint. */
+  readonly size: number;
+  readonly findings: { readonly index: number; readonly entry: Uint8Array }[];
 }
 
 export interface LookupOptions {
@@ -128,6 +149,7 @@ export function publicationDue(p: {
 export class Sequencer extends DurableObject<Env> {
   readonly #config: Config;
   readonly #store: SequencerStore;
+  readonly #audit: AuditStore;
   #signer: Promise<NoteSigner> | null = null;
   #inflight: Promise<PublishResult> | null = null;
 
@@ -138,6 +160,7 @@ export class Sequencer extends DurableObject<Env> {
     // Synchronous SQL in the constructor completes before any request is delivered, so it needs
     // no blockConcurrencyWhile.
     this.#store.migrate();
+    this.#audit = new AuditStore(ctx.storage, this.#store);
   }
 
   async append(items: AppendItem[]): Promise<AppendResult> {
@@ -244,6 +267,121 @@ export class Sequencer extends DurableObject<Env> {
       lastError: this.#store.lastError(),
       alarmAt: await this.ctx.storage.getAlarm(),
       ingest: this.#store.ingestCounters(),
+      audit: this.#audit.latest('audit'),
+    };
+  }
+
+  // ---- auditor (M6): each call is one synchronous step of audit/store.ts ---------------------
+
+  #scanContext(): ScanContext {
+    return {
+      now: Date.now(),
+      ttlMs: this.#config.dedupeTtlSeconds * 1000,
+      bucket: this.#config.monitoredBucket,
+    };
+  }
+
+  /**
+   * Publishes until every entry durable at the call is covered by a committed publication, so the
+   * objects view reflects them. Used where the auditor must compare against everything the log
+   * has received: at scan start and before confirming candidates.
+   */
+  async #flush(): Promise<void> {
+    const target = this.#store.nextSeq();
+    while (this.#store.publishedSize() < target) {
+      const before = this.#store.publishedSize();
+      await this.publish();
+      if (this.#store.publishedSize() <= before) throw new Error('publication made no progress');
+    }
+  }
+
+  async scanStart(scanId: string, mode: ScanMode): Promise<Outcome<{ scan: ScanSummary }>> {
+    await this.#flush();
+    const r = this.#audit.start(scanId, mode, this.#config.auditGraceSeconds, this.#scanContext());
+    await this.#scheduleAlarm(false);
+    return r;
+  }
+
+  scanState(scanId: string): ScanSummary | null {
+    return this.#audit.get(scanId);
+  }
+
+  activeScan(): ScanSummary | null {
+    return this.#audit.active();
+  }
+
+  async scanPage(req: PageRequest): Promise<Outcome<PageResult>> {
+    const r = this.#audit.page(req, this.#scanContext());
+    await this.#scheduleAlarm(false);
+    return r;
+  }
+
+  async scanObserve(
+    scanId: string,
+    page: number,
+    observations: ScrubObservation[],
+  ): Promise<Outcome<{ observations: number; findings: number }>> {
+    const r = this.#audit.observe(scanId, page, observations, this.#scanContext());
+    await this.#scheduleAlarm(false);
+    return r;
+  }
+
+  async scanConfirm(scanId: string, limit: number): Promise<Outcome<ConfirmResult>> {
+    await this.#flush();
+    const r = this.#audit.confirm(scanId, limit, this.#scanContext());
+    await this.#scheduleAlarm(false);
+    return r;
+  }
+
+  /**
+   * Ends a scan. For an audit: appends `audit.scan` end, publishes it, writes
+   * `x-reports/<scanId>.json` (create-if-absent), then marks the scan done. Each part is
+   * idempotent, so a retried call completes whatever an interrupted one left.
+   */
+  async scanFinish(
+    scanId: string,
+  ): Promise<Outcome<{ scan: ScanSummary; reportKey: string | null }>> {
+    const r = this.#audit.finish(scanId, this.#scanContext());
+    if (!r.ok) return r;
+    if (r.scan.mode !== 'audit') return { ok: true, scan: r.scan, reportKey: null };
+    const reportKey = `${this.#config.logName}/x-reports/${scanId}.json`;
+    if (r.scan.state === 'reporting') {
+      await this.#flush();
+      const report = this.#audit.report(scanId, this.#config.logOrigin);
+      if (report === null) throw new Error(`no report for ${scanId}`);
+      await putImmutable(
+        this.env.LOG,
+        reportKey,
+        utf8Encode(`${JSON.stringify(report)}\n`),
+        'report',
+      );
+      this.#audit.markDone(scanId, Date.now());
+    }
+    const scan = this.#audit.get(scanId);
+    if (scan === null) throw new Error('unreachable');
+    return { ok: true, scan, reportKey };
+  }
+
+  /** Findings of the most recent audit, in log order after index `after` (for the API). */
+  scanFindings(options: LookupOptions = {}): FindingsPage {
+    const limit = options.limit ?? MAX_RANGE_LIMIT;
+    const after = options.after ?? null;
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RANGE_LIMIT) {
+      throw new RangeError(`limit must be 1..${String(MAX_RANGE_LIMIT)}`);
+    }
+    if (after !== null && (!Number.isSafeInteger(after) || after < 0)) {
+      throw new RangeError('after must be a non-negative integer');
+    }
+    const scan = this.#audit.latest('audit');
+    return {
+      scan,
+      size: this.#store.publishedSize(),
+      findings:
+        scan === null
+          ? []
+          : this.#audit
+              .findings(scan.scanId, after, limit)
+              .map((f) => ({ index: f.seq, entry: f.entry })),
     };
   }
 

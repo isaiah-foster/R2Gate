@@ -72,3 +72,22 @@ export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
+
+/**
+ * Orders two well-formed strings as their UTF-8 encodings would compare bytewise, without encoding
+ * them. UTF-8 byte order is code point order. JavaScript's `<` compares UTF-16 code units instead,
+ * which puts astral characters (surrogate pairs, U+D800..) before U+E000..U+FFFF. R2 list() and
+ * SQLite's BINARY collation both use byte order, so the auditor's merge-join must too.
+ */
+export function compareUtf8(a: string, b: string): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = a.charCodeAt(i);
+    const y = b.charCodeAt(i);
+    if (x === y) continue;
+    // Equal prefixes keep both strings aligned on the same surrogate boundary, so the code points
+    // at i are either both complete or (inside a pair with equal high halves) both low halves.
+    return (a.codePointAt(i) ?? x) - (b.codePointAt(i) ?? y);
+  }
+  return a.length - b.length;
+}

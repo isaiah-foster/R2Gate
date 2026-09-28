@@ -11,6 +11,8 @@
 //   objects     latest logged state per key (the auditor's "expected state")
 //   key_index   (key, seq) for every published entry that names a key
 //   counters    ingest counters shown by /status (v2)
+//   scrub_state last published deep-scrub observation per key (v3)
+//   scans, scan_candidates, scan_findings   auditor state (v3; worker/src/audit/store.ts)
 
 import {
   TILE_WIDTH,
@@ -81,6 +83,17 @@ export interface ObjectRange {
   /** Inclusive upper bound. */
   readonly through?: string;
   readonly limit: number;
+  /** Only keys the log shows as present (not deleted). */
+  readonly liveOnly?: boolean;
+}
+
+/** The last published deep-scrub observation of a key (for CONTENT_DRIFT). */
+export interface ScrubState {
+  readonly etag: string;
+  readonly size: number;
+  readonly sha256: string;
+  readonly observedAt: string;
+  readonly seq: number;
 }
 
 export class StoreError extends Error {
@@ -112,6 +125,56 @@ const MIGRATIONS: readonly (readonly string[])[] = [
   ],
   // v2 (M3)
   [`CREATE TABLE counters(name TEXT PRIMARY KEY, value INTEGER NOT NULL)`],
+  // v3 (M6): the auditor. The partial index serves the merge-join's range scan of live keys.
+  [
+    `CREATE INDEX objects_live ON objects(key) WHERE deleted = 0`,
+    `CREATE TABLE scrub_state(
+       key TEXT PRIMARY KEY,
+       etag TEXT NOT NULL,
+       size INTEGER NOT NULL,
+       sha256 TEXT NOT NULL,
+       observed_at TEXT NOT NULL,
+       seq INTEGER NOT NULL)`,
+    `CREATE TABLE scans(
+       scan_id TEXT PRIMARY KEY,
+       mode TEXT NOT NULL,
+       state TEXT NOT NULL,
+       grace_seconds INTEGER NOT NULL,
+       started_at INTEGER NOT NULL,
+       updated_at INTEGER NOT NULL,
+       finished_at INTEGER,
+       log_size_at_start INTEGER NOT NULL,
+       cursor TEXT,
+       pages INTEGER NOT NULL DEFAULT 0,
+       last_after TEXT,
+       last_result TEXT,
+       observed_through INTEGER NOT NULL DEFAULT -1,
+       objects_scanned INTEGER NOT NULL DEFAULT 0,
+       candidates INTEGER NOT NULL DEFAULT 0,
+       findings INTEGER NOT NULL DEFAULT 0,
+       dropped INTEGER NOT NULL DEFAULT 0,
+       observations INTEGER NOT NULL DEFAULT 0,
+       snapshots INTEGER NOT NULL DEFAULT 0,
+       start_seq INTEGER,
+       end_seq INTEGER)`,
+    `CREATE INDEX scans_state ON scans(state)`,
+    `CREATE TABLE scan_candidates(
+       id INTEGER PRIMARY KEY,
+       scan_id TEXT NOT NULL,
+       kind TEXT NOT NULL,
+       key TEXT NOT NULL,
+       basis_seq INTEGER,
+       observed_at INTEGER NOT NULL,
+       entry BLOB NOT NULL,
+       UNIQUE(scan_id, kind, key))`,
+    `CREATE TABLE scan_findings(
+       scan_id TEXT NOT NULL,
+       seq INTEGER NOT NULL,
+       kind TEXT NOT NULL,
+       key TEXT NOT NULL,
+       entry BLOB NOT NULL,
+       PRIMARY KEY(scan_id, seq))`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -145,6 +208,27 @@ function int(v: unknown, what: string): number {
     throw new StoreError(`${what} is not an integer`);
   }
   return v;
+}
+
+interface ObjectRow {
+  [column: string]: SqlStorageValue;
+  key: string;
+  etag: string | null;
+  size: number | null;
+  event_time: string;
+  seq: number;
+  deleted: number;
+}
+
+function toObjectState(r: ObjectRow): ObjectState {
+  return {
+    key: r.key,
+    etag: r.etag,
+    size: r.size,
+    eventTime: r.event_time,
+    seq: r.seq,
+    deleted: r.deleted !== 0,
+  };
 }
 
 /** The key an entry is about, if any (indexed in key_index). */
@@ -236,7 +320,7 @@ export class SequencerStore {
    * already be validated by the caller.
    */
   append(items: readonly AppendItem[], now: number, ttlMs: number): AppendResult {
-    return this.#storage.transactionSync(() => this.#insert(items, now, ttlMs));
+    return this.#storage.transactionSync(() => this.insertInTransaction(items, now, ttlMs));
   }
 
   /**
@@ -250,7 +334,7 @@ export class SequencerStore {
     ttlMs: number,
   ): AppendResult {
     return this.#storage.transactionSync(() => {
-      const result = this.#insert(items, now, ttlMs);
+      const result = this.insertInTransaction(items, now, ttlMs);
       const add = { ...report, accepted: result.accepted, duplicates: result.duplicates };
       for (const name of COUNTERS) {
         if (add[name] === 0) continue;
@@ -269,7 +353,11 @@ export class SequencerStore {
     });
   }
 
-  #insert(items: readonly AppendItem[], now: number, ttlMs: number): AppendResult {
+  /**
+   * `append` without its transaction, for callers that must commit entries together with their
+   * own state (the auditor, worker/src/audit/store.ts). The caller holds the transaction.
+   */
+  insertInTransaction(items: readonly AppendItem[], now: number, ttlMs: number): AppendResult {
     let next = this.nextSeq();
     let firstSeq: number | null = null;
     let duplicates = 0;
@@ -422,8 +510,21 @@ export class SequencerStore {
       };
     } else if (e.type === 'object.snapshot') {
       state = { etag: e.etag, size: e.size, time: e.uploaded, deleted: 0 };
+    } else if (e.type === 'audit.observation') {
+      // Deep scrub's last word on the key; the next scrub compares against it (CONTENT_DRIFT).
+      this.#sql.exec(
+        `INSERT OR REPLACE INTO scrub_state(key, etag, size, sha256, observed_at, seq)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        key,
+        e.etag,
+        e.size,
+        e.sha256,
+        e.observedAt,
+        seq,
+      );
+      return;
     } else {
-      return; // findings and observations are indexed but do not change the expected state
+      return; // findings are indexed but do not change the expected state
     }
     this.#sql.exec(
       `INSERT INTO objects(key, etag, size, event_time, event_ms, seq, deleted)
@@ -444,29 +545,40 @@ export class SequencerStore {
 
   /** Expected state for keys in (after, through], in key order (SQLite BINARY = UTF-8 byte order). */
   objectStates(range: ObjectRange): ObjectState[] {
-    const rows = this.#sql.exec<{
-      key: string;
-      etag: string | null;
-      size: number | null;
-      event_time: string;
-      seq: number;
-      deleted: number;
-    }>(
+    const rows = this.#sql.exec<ObjectRow>(
       `SELECT key, etag, size, event_time, seq, deleted FROM objects
-       WHERE (?1 IS NULL OR key > ?1) AND (?2 IS NULL OR key <= ?2)
+       WHERE (?1 IS NULL OR key > ?1) AND (?2 IS NULL OR key <= ?2) AND (?4 = 0 OR deleted = 0)
        ORDER BY key LIMIT ?3`,
       range.after ?? null,
       range.through ?? null,
       range.limit,
+      range.liveOnly === true ? 1 : 0,
     );
-    return rows.toArray().map((r) => ({
-      key: r.key,
-      etag: r.etag,
-      size: r.size,
-      eventTime: r.event_time,
-      seq: r.seq,
-      deleted: r.deleted !== 0,
-    }));
+    return rows.toArray().map(toObjectState);
+  }
+
+  /** Expected state of one key, live or deleted, or null if the log has never named it. */
+  objectState(key: string): ObjectState | null {
+    const rows = this.#sql
+      .exec<ObjectRow>(
+        'SELECT key, etag, size, event_time, seq, deleted FROM objects WHERE key = ?',
+        key,
+      )
+      .toArray();
+    const r = rows[0];
+    return r === undefined ? null : toObjectState(r);
+  }
+
+  scrubState(key: string): ScrubState | null {
+    const r = this.#sql
+      .exec<{ etag: string; size: number; sha256: string; observed_at: string; seq: number }>(
+        'SELECT etag, size, sha256, observed_at, seq FROM scrub_state WHERE key = ?',
+        key,
+      )
+      .toArray()[0];
+    return r === undefined
+      ? null
+      : { etag: r.etag, size: r.size, sha256: r.sha256, observedAt: r.observed_at, seq: r.seq };
   }
 
   /** Log indexes of published entries naming `key` after index `after`, oldest first. */

@@ -1,6 +1,8 @@
 // Shared fixtures for the Sequencer tests (all run inside workerd against local DO SQLite and R2).
 import {
   CHECKPOINT_PATH,
+  TILE_WIDTH,
+  decodeBundle,
   encodeEntry,
   entryBundlePath,
   newSigner,
@@ -165,4 +167,28 @@ export class ObservedBucket implements LogBucket {
   get(key: string): Promise<R2ObjectBody | null> {
     return env.LOG.get(key);
   }
+}
+
+/** Every entry covered by the live checkpoint under `prefix`, read back from the R2 bundles. */
+export async function publishedEntries(prefix: string): Promise<Uint8Array[]> {
+  const cp = await liveCheckpoint(prefix);
+  if (cp === null) return [];
+  const out: Uint8Array[] = [];
+  for (let n = 0; n * TILE_WIDTH < cp.size; n++) {
+    const width = Math.min(TILE_WIDTH, cp.size - n * TILE_WIDTH);
+    const bytes = await readBytes(`${prefix}/${entryBundlePath(n, width)}`);
+    if (bytes === null) throw new Error(`bundle ${String(n)} missing`);
+    out.push(...decodeBundle(bytes));
+  }
+  return out;
+}
+
+/** `bucket.put` without preconditions; with an options argument it is typed as never null. */
+export function putObject(
+  bucket: R2Bucket,
+  key: string,
+  body: string,
+  options: R2PutOptions = {},
+): Promise<R2Object> {
+  return bucket.put(key, body, options);
 }

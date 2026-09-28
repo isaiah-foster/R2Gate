@@ -10,6 +10,8 @@ import {
   utf8Decode,
   utf8Encode,
 } from '@r2notary/core';
+import { newScanId, startScan, type ScanParams } from './audit/scan.ts';
+import type { ScanMode, ScanSummary } from './audit/store.ts';
 import type { Config } from './config.ts';
 import { json, methodNotAllowed, notFound } from './http.ts';
 import type { Sequencer } from './sequencer.ts';
@@ -17,6 +19,7 @@ import type { Sequencer } from './sequencer.ts';
 export interface ApiDeps {
   readonly config: Config;
   readonly sequencer: DurableObjectStub<Sequencer>;
+  readonly workflow: Pick<Workflow<ScanParams>, 'createBatch'>;
   readonly bucket: { get(key: string): Promise<R2ObjectBody | null> };
   /** Bundle reads per lookup page (default LOOKUP_MAX_BUNDLES); smaller in tests. */
   readonly maxBundles?: number;
@@ -33,7 +36,31 @@ const iso = (ms: number | null): string | null => (ms === null ? null : new Date
 
 const badRequest = (error: string): Response => json(400, { error });
 
-/** GET /api/v1/status: operational counters. The last audit summary joins in M6. */
+/** A scan as the API shows it: times as RFC 3339, and without the cursor (a key name). */
+export function scanView(s: ScanSummary | null): Record<string, unknown> | null {
+  if (s === null) return null;
+  return {
+    scanId: s.scanId,
+    mode: s.mode,
+    state: s.state,
+    graceSeconds: s.graceSeconds,
+    startedAt: iso(s.startedAt),
+    updatedAt: iso(s.updatedAt),
+    finishedAt: iso(s.finishedAt),
+    logSizeAtStart: s.logSizeAtStart,
+    pages: s.pages,
+    objectsScanned: s.objectsScanned,
+    pending: s.pending,
+    findings: s.findings,
+    dropped: s.dropped,
+    observations: s.observations,
+    snapshots: s.snapshots,
+    startIndex: s.startIndex,
+    endIndex: s.endIndex,
+  };
+}
+
+/** GET /api/v1/status: operational counters and the latest audit. */
 export async function status(deps: ApiDeps, head: boolean): Promise<Response> {
   const s = await deps.sequencer.status();
   return json(
@@ -54,6 +81,7 @@ export async function status(deps: ApiDeps, head: boolean): Promise<Response> {
             ? null
             : { at: iso(s.ingest.lastInvalid.at), reason: s.ingest.lastInvalid.reason },
       },
+      audit: scanView(s.audit),
     },
     head,
   );
@@ -123,16 +151,61 @@ export async function lookup(url: URL, deps: ApiDeps, head: boolean): Promise<Re
   );
 }
 
-/** GET /api/v1/findings. The auditor (M6) is what produces findings; until then there are none. */
-export function findings(head: boolean): Response {
-  return json(200, { latestScan: null, findings: [] }, head);
+export const FINDINGS_MAX_LIMIT = 1000;
+
+/**
+ * GET /api/v1/findings[?after=I][&limit=N]: findings of the most recent audit, oldest first, as
+ * `{index, published, entry}`. Like lookup, this is an unverified index: `r2notary findings`
+ * proves each one, and the scan's signed `audit.scan` end entry commits to how many there are.
+ * `published` is false for a finding not yet covered by the live checkpoint.
+ */
+export async function findings(url: URL, deps: ApiDeps, head: boolean): Promise<Response> {
+  const limit = decimal(url.searchParams.get('limit'), 1, FINDINGS_MAX_LIMIT);
+  if (limit === undefined) return badRequest(`limit must be 1-${String(FINDINGS_MAX_LIMIT)}`);
+  const after = decimal(url.searchParams.get('after'), 0, Number.MAX_SAFE_INTEGER);
+  if (after === undefined) return badRequest('after must be a non-negative integer');
+  const pageSize = limit ?? FINDINGS_MAX_LIMIT;
+  const page = await deps.sequencer.scanFindings({
+    ...(after === null ? {} : { after }),
+    limit: Math.min(pageSize + 1, FINDINGS_MAX_LIMIT),
+  });
+  const items = page.findings.slice(0, pageSize);
+  const more = page.findings.length > pageSize;
+  return json(
+    200,
+    {
+      scan: scanView(page.scan),
+      size: page.size,
+      findings: items.map((f) => ({
+        index: f.index,
+        published: f.index < page.size,
+        entry: JSON.parse(utf8Decode(f.entry)) as unknown,
+      })),
+      next: more ? (items.at(-1)?.index ?? null) : null,
+    },
+    head,
+  );
+}
+
+/** POST /api/v1/admin/{scan,backfill}: start a scan Workflow, or 409 if one is running. */
+async function start(mode: ScanMode, deps: ApiDeps): Promise<Response> {
+  const r = await startScan(
+    { sequencer: deps.sequencer, workflow: deps.workflow },
+    mode,
+    newScanId(mode, Date.now()),
+  );
+  if (!r.started) {
+    return json(409, { error: 'a scan is already in progress', active: scanView(r.active) });
+  }
+  return json(202, { scanId: r.scanId, mode });
 }
 
 /** /api/v1/admin/<op>, after the admin token has been checked. */
 export async function admin(op: string, request: Request, deps: ApiDeps): Promise<Response> {
   if (!['publish', 'backfill', 'scan'].includes(op)) return notFound();
   if (request.method !== 'POST') return methodNotAllowed('POST');
-  if (op !== 'publish') return json(501, { error: `${op} is not implemented yet (M6)` });
+  if (op === 'scan') return start('audit', deps);
+  if (op === 'backfill') return start('backfill', deps);
   const result = await deps.sequencer.publish();
   return json(200, result);
 }
@@ -151,7 +224,7 @@ export async function readApi(
     case 'lookup':
       return lookup(url, deps, head);
     case 'findings':
-      return findings(head);
+      return findings(url, deps, head);
     default:
       return notFound();
   }

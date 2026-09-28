@@ -5,7 +5,7 @@
 // evidence of a writer bug or of tampering. Unknown types (or versions) are reported as unknown
 // rather than rejected, so the schema can grow without breaking old readers.
 //
-// The audit.* types are provisional until the auditor lands (M6); nothing has been published yet.
+// The audit.* shapes were settled with the auditor in M6 (DECISIONS D6.6).
 
 import { MAX_ENTRY_SIZE } from './bundle.ts';
 import {
@@ -37,6 +37,7 @@ export const FINDING_KINDS = [
   'ETAG_MISMATCH',
   'SIZE_MISMATCH',
   'PHANTOM_DELETE',
+  'CONTENT_DRIFT',
 ] as const;
 export type FindingKind = (typeof FINDING_KINDS)[number];
 
@@ -75,14 +76,21 @@ export interface ObservedState {
   readonly etag: string;
   readonly size: number;
   readonly uploaded: string;
+  /** CONTENT_DRIFT only: lowercase hex SHA-256 of the body read by deep scrub. */
+  readonly sha256?: string;
 }
 
 export interface ExpectedState {
   readonly etag?: string;
   readonly size?: number;
   readonly eventTime: string;
-  /** Log index of the entry that established the expected state. */
-  readonly seq: number;
+  /**
+   * Log index of the entry that established the expected state. Required except for a
+   * CONTENT_DRIFT against the SHA-256 R2 stored at upload, which no log entry holds.
+   */
+  readonly seq?: number;
+  /** CONTENT_DRIFT only: the SHA-256 the body was expected to have. */
+  readonly sha256?: string;
 }
 
 export interface AuditFinding {
@@ -252,12 +260,18 @@ const header = (type: EntryType): Record<string, Field> => ({
   type: req(literal(type)),
 });
 
-const observedState = nested({ etag: req(etag), size: req(uint), uploaded: req(timestamp) });
+const observedState = nested({
+  etag: req(etag),
+  size: req(uint),
+  uploaded: req(timestamp),
+  sha256: opt(sha256Hex),
+});
 const expectedState = nested({
   etag: opt(etag),
   size: opt(uint),
   eventTime: req(timestamp),
-  seq: req(uint),
+  seq: opt(uint),
+  sha256: opt(sha256Hex),
 });
 
 const validators: Readonly<Record<EntryType, (v: unknown) => void>> = {
@@ -312,6 +326,19 @@ const validators: Readonly<Record<EntryType, (v: unknown) => void>> = {
     }
     if ('expected' in o !== wantExpected) {
       fail('entry.expected', `must be ${wantExpected ? 'present' : 'absent'} for ${kind}`);
+    }
+    // A content hash is what CONTENT_DRIFT is about, and nothing else carries one. Every other
+    // expectation comes from a log entry, so it must cite its index.
+    const drift = kind === 'CONTENT_DRIFT';
+    for (const side of ['observed', 'expected'] as const) {
+      const state = o[side] as Record<string, unknown> | undefined;
+      if (state !== undefined && 'sha256' in state !== drift) {
+        fail(`entry.${side}.sha256`, `must be ${drift ? 'present' : 'absent'} for ${kind}`);
+      }
+    }
+    const expected = o.expected as Record<string, unknown> | undefined;
+    if (expected !== undefined && !drift && !('seq' in expected)) {
+      fail('entry.expected.seq', `is required for ${kind}`);
     }
   },
   'audit.scan': (v) => {

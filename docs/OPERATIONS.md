@@ -5,30 +5,36 @@ creates, modifies or bills for something in a Cloudflare account, so the reposit
 approves them (PLAN §0, working agreement 4). This file grows with each milestone; deployment,
 key rotation and teardown are written up in M7.
 
-## R2 conditional-write contract test (M2, to run in M6)
+## R2 contract tests (M2 and M6, not yet run remotely)
 
-Publication relies on `put(key, data, { onlyIf: { etagDoesNotMatch: '*' } })` meaning "create
-only if absent" (DECISIONS D2.1). The Workers API reference does not define `'*'`, so the
-behaviour is pinned by a contract test that passes against local R2 and must also pass against
-real R2 before the log is trusted there.
+Two R2 behaviours are pinned by contract tests that pass against local R2 and must also pass
+against real R2 before the log is trusted there:
 
-Counted from the test code, it issues 12 PUTs (some deliberately rejected), 1 LIST, 8 GET/HEADs
-and a handful of DELETEs on one bucket, and deletes what it wrote. Use a dedicated, empty bucket.
+- publication relies on `put(key, data, { onlyIf: { etagDoesNotMatch: '*' } })` meaning "create
+  only if absent" (DECISIONS D2.1); the Workers API reference does not define `'*'`;
+- the auditor relies on `list()` returning keys in UTF-8 byte order and on `startAfter`
+  (DECISIONS D6.2, D6.3); `startAfter` is not in the Workers API reference.
+
+Counted from the test code, the run issues 66 PUTs (some deliberately rejected), about 57 LISTs,
+8 GET/HEADs and a handful of DELETEs on one bucket, and deletes what it wrote. Use a dedicated,
+empty bucket.
 
 1. Log in (interactive, opens a browser): `npx wrangler login`
 2. Create a test bucket (billed per R2 pricing; the name is a placeholder):
    `npx wrangler r2 bucket create r2notary-contract-test`
 3. Put that name in `worker/test-remote/wrangler.remote.jsonc` (`bucket_name`). Do not commit it.
 4. Run: `npm run test:contract:remote`
-5. Record the result (date, wrangler version, pass/fail per case) in `docs/DECISIONS.md` D2.1.
+5. Record the result (date, wrangler version, pass/fail per case) in `docs/DECISIONS.md` D2.1
+   and D6.2.
 6. Remove the bucket when done: `npx wrangler r2 bucket delete r2notary-contract-test`
 
 `R2_CONTRACT_LOCAL=1 npm run test:contract:remote` runs the same harness against local R2 with no
 network access; use it to check the setup first.
 
-If the remote run fails: switch `CREATE_ONLY` in `worker/src/publish.ts` to the
+If the conditional-write cases fail: switch `CREATE_ONLY` in `worker/src/publish.ts` to the
 `If-None-Match: *` `Headers` form if that case passes, otherwise stop and redesign (a silent
-overwrite would break I4).
+overwrite would break I4). If the list-order cases fail, do not run the auditor against that
+bucket: its merge-join would report false findings (see DECISIONS D6.3 for the fallback).
 
 ## Event ingestion: queues and notification rule (M3, not yet run)
 
@@ -75,3 +81,31 @@ for 2 s, errors and API answers never.
 immutable resources would otherwise keep being served without a token. Requests with an
 `Authorization` header always bypass the cache, so a log that has always been private is
 unaffected.
+
+## The auditor (M6, not yet run remotely)
+
+The `r2notary-scan` Workflow is declared in `worker/wrangler.jsonc` and is created by
+`wrangler deploy`; there is no separate create command. Once deployed:
+
+- **Schedule:** the cron trigger (`0 */6 * * *`) starts an audit unless one is running.
+- **By hand:** `curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" https://<host>/api/v1/admin/scan`
+  (or `/backfill`). The answer is 202 with the scan ID, or 409 with the scan in progress.
+- **Watch it:** `npx wrangler workflows instances list r2notary-scan` and
+  `npx wrangler workflows instances describe r2notary-scan <scanId>` (a large bucket hands off to
+  `<scanId>-p1`, `-p2`, ...). `/api/v1/status` shows the latest audit's progress.
+- **Findings:** `r2notary findings --log https://<host>/log/<name> --vkey "$VKEY" --api https://<host>`
+  proves each finding and checks the count against the scan's signed end entry.
+- **Backfill first.** On a bucket that already has objects, run a backfill once before the first
+  audit; otherwise every pre-existing object is an `UNLOGGED_OBJECT`.
+- **Webhook (optional):** `npx wrangler secret put ALERT_WEBHOOK_URL -c worker/wrangler.jsonc`
+  (https only). It receives counts and log indexes, never key names.
+- **Grace window:** `AUDIT_GRACE_SECONDS` (default 300) must exceed the time from a write to its
+  notification being published in the log, including queue retries; otherwise in-flight changes
+  become findings. Every audit takes at least this long after its last page.
+- **Deep scrub** is off (`DEEP_SCRUB_SAMPLE_RATE="0"`). Each scrubbed object is a Class B read and
+  CPU time; on the Workers Free plan a step has 10 ms of CPU, which hashing will likely exceed.
+
+Cost per audit: one Class A `list` per page of up to 1,000 objects, plus Durable Object requests
+for each page and confirmation batch, plus Workflow steps. Not measured yet (PLAN §14, M7).
+
+The tamper demo that exercises all of this against real R2 is `docs/DEMO.md`.

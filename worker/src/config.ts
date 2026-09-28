@@ -19,6 +19,12 @@ export interface Config {
   readonly dedupeTtlSeconds: number;
   /** Name of the dead-letter queue, so its batches can be counted (`batch.queue`). */
   readonly eventsDlqName: string;
+  /** How long an observation must stay unexplained by an event before it is a finding (M6). */
+  readonly auditGraceSeconds: number;
+  /** Fraction of listed objects (0..1) whose bodies the auditor hashes (deep scrub). */
+  readonly deepScrubSampleRate: number;
+  /** Objects larger than this are never deep-scrubbed. */
+  readonly deepScrubMaxBytes: number;
 }
 
 type ConfigVars = Record<
@@ -29,7 +35,10 @@ type ConfigVars = Record<
   | 'CHECKPOINT_INTERVAL_MS'
   | 'BATCH_MAX_ENTRIES'
   | 'DEDUPE_TTL_SECONDS'
-  | 'EVENTS_DLQ_NAME',
+  | 'EVENTS_DLQ_NAME'
+  | 'AUDIT_GRACE_SECONDS'
+  | 'DEEP_SCRUB_SAMPLE_RATE'
+  | 'DEEP_SCRUB_MAX_BYTES',
   string
 >;
 
@@ -47,6 +56,14 @@ function int(name: string, value: string, min: number, max: number): number {
     throw new ConfigError(`${name} must be between ${String(min)} and ${String(max)}`);
   }
   return n;
+}
+
+/** A decimal fraction in [0, 1] with at most 6 decimals ("0", "0.01", "1"). */
+function fraction(name: string, value: string): number {
+  if (!/^(?:0(?:\.\d{1,6})?|1(?:\.0{1,6})?)$/.test(value)) {
+    throw new ConfigError(`${name} must be a decimal between 0 and 1 (at most 6 decimals)`);
+  }
+  return Number(value);
 }
 
 export function parseConfig(vars: ConfigVars): Config {
@@ -83,5 +100,9 @@ export function parseConfig(vars: ConfigVars): Config {
     batchMaxEntries: int('BATCH_MAX_ENTRIES', vars.BATCH_MAX_ENTRIES, 1, 1000),
     dedupeTtlSeconds: int('DEDUPE_TTL_SECONDS', vars.DEDUPE_TTL_SECONDS, 60, 30 * 86_400),
     eventsDlqName: vars.EVENTS_DLQ_NAME,
+    // 0 is allowed (tests use it); a day is far beyond any plausible notification delay.
+    auditGraceSeconds: int('AUDIT_GRACE_SECONDS', vars.AUDIT_GRACE_SECONDS, 0, 86_400),
+    deepScrubSampleRate: fraction('DEEP_SCRUB_SAMPLE_RATE', vars.DEEP_SCRUB_SAMPLE_RATE),
+    deepScrubMaxBytes: int('DEEP_SCRUB_MAX_BYTES', vars.DEEP_SCRUB_MAX_BYTES, 0, 2 ** 40),
   };
 }

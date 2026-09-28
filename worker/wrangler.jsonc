@@ -7,7 +7,7 @@
   // Placeholders only: no account IDs, real bucket names or secrets belong here.
   // Secrets: `.dev.vars` locally (`npm run keygen`), `wrangler secret put` remotely
   // (docs/OPERATIONS.md). READ_TOKEN is only used when PUBLIC_LOG is "false" (the default).
-  // ALERT_WEBHOOK_URL joins when M6 uses it.
+  // ALERT_WEBHOOK_URL (https, optional) is not listed: `required` is the only kind wrangler has.
   "secrets": { "required": ["SIGNING_KEY", "ADMIN_TOKEN", "READ_TOKEN"] },
 
   "exports": {
@@ -23,7 +23,7 @@
   // The consumer acks a batch once the Sequencer has it, and retries it with backoff otherwise
   // (worker/src/ingest.ts). After max_retries a message moves to the dead-letter queue, which this
   // Worker also consumes: one more attempt to log it, and a count in /status. The DLQ has no DLQ of
-  // its own, so a message that fails there too is dropped; the auditor (M6) is the backstop.
+  // its own, so a message that fails there too is dropped; the auditor is the backstop.
   "queues": {
     "consumers": [
       {
@@ -41,6 +41,8 @@
       },
     ],
   },
+  // The auditor (worker/src/audit/). The cron starts an audit every 6 hours unless one is running;
+  // POST /api/v1/admin/{scan,backfill} start one by hand.
   "workflows": [
     { "binding": "SCAN_WORKFLOW", "name": "r2notary-scan", "class_name": "ScanWorkflow" },
   ],
@@ -58,7 +60,9 @@
     "DEDUPE_TTL_SECONDS": "86400",
     // must match the dead_letter_queue above
     "EVENTS_DLQ_NAME": "r2notary-events-dlq",
+    // How long a divergence must stay unexplained by an event before it is a finding.
     "AUDIT_GRACE_SECONDS": "300",
+    // Deep scrub reads object bodies (billed reads, CPU): off unless set, e.g. "0.01".
     "DEEP_SCRUB_SAMPLE_RATE": "0",
     "DEEP_SCRUB_MAX_BYTES": "104857600",
     "PUBLIC_LOG": "false",

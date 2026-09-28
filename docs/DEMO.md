@@ -1,0 +1,108 @@
+# Demo
+
+A walkthrough against **real R2**: log a bucket's changes, verify them with the Go CLI, then change
+the bucket behind the log's back and let the auditor find it.
+
+> **Status: not yet run.** Every step below creates, changes or bills for resources in a Cloudflare
+> account, so the repository owner runs it or approves it (PLAN §0, working agreement 4). When it
+> has run, the date, wrangler version and the output of each "Record" step go here. PLAN M7 extends
+> this file with the remaining parts of the demo (corrupting a tile, a consistency proof across a
+> longer history).
+
+Commands were checked against `wrangler` 4.147.0 `--help` on 2026-10-03. Bucket, queue and host
+names are the committed placeholders; use your own.
+
+## 0. Prerequisites
+
+- Everything in `docs/OPERATIONS.md` up to and including the auditor section: both buckets, the
+  queues and the notification rule, the secrets, and **both R2 contract tests passing against real
+  R2** (conditional writes and list order). If the list-order contract fails, stop: the auditor
+  would report false findings.
+- The Worker deployed (`npx wrangler deploy -c worker/wrangler.jsonc`) and reachable at `$HOST`.
+- The Go CLI built (`cd cli && go build -o r2notary ./cmd/r2notary`), and:
+
+```sh
+export HOST=https://r2notary.example.com LOG=$HOST/log/example-log
+export VKEY='r2notary.example.com/log/example-log+...'    # printed by npm run keygen
+export R2NOTARY_TOKEN=...  ADMIN_TOKEN=...                # READ_TOKEN and ADMIN_TOKEN
+export B=example-monitored-bucket
+auth=(-H "Authorization: Bearer $ADMIN_TOKEN")
+```
+
+## 1. Log ordinary writes
+
+```sh
+for i in $(seq 1 100); do
+  echo "object $i" > /tmp/obj.txt
+  npx wrangler r2 object put "$B/demo/obj-$i" --file /tmp/obj.txt --remote
+done
+echo special > /tmp/special.txt
+npx wrangler r2 object put "$B/demo/with space/é+%.txt" --file /tmp/special.txt --remote
+```
+
+Wait for the events to be published (`curl -s -H "Authorization: Bearer $R2NOTARY_TOKEN"
+$HOST/api/v1/status` shows `size` of at least 101 and `pending` 0), then:
+
+```sh
+./r2notary checkpoint --log $LOG --vkey "$VKEY" --out before.cp
+./r2notary inclusion  --log $LOG --vkey "$VKEY" --key demo/obj-1
+./r2notary inclusion  --log $LOG --vkey "$VKEY" --key 'demo/with space/é+%.txt'
+./r2notary monitor    --log $LOG --vkey "$VKEY" --state mon.json --once -q
+```
+
+**Record:** the `inclusion` output for the special key. This answers DECISIONS D3.7: if R2
+URL-encodes keys in notifications, the key is logged as `demo/with%20space/...` and the second
+`inclusion` finds nothing. In that case stop here; the auditor would report that key as both
+unlogged and missing until ingest decodes keys.
+
+## 2. A clean audit
+
+```sh
+curl -s -X POST "${auth[@]}" $HOST/api/v1/admin/scan        # 202 {"scanId": ...}
+```
+
+Wait until `/api/v1/status` shows `audit.state` = `done` (at least `AUDIT_GRACE_SECONDS` after the
+listing finishes). Then:
+
+```sh
+./r2notary findings --log $LOG --vkey "$VKEY" --api $HOST
+```
+
+**Expected:** 0 findings, and "the signed end entry ... confirms the count".
+
+## 3. Change the bucket behind the log's back
+
+Disable the notification rule, make three changes, re-enable it:
+
+```sh
+npx wrangler r2 bucket notification delete $B --queue r2notary-events
+echo sneaky > /tmp/sneaky.txt
+npx wrangler r2 object put "$B/demo/unlogged" --file /tmp/sneaky.txt --remote   # new object
+echo "rewritten 2" > /tmp/obj.txt
+npx wrangler r2 object put "$B/demo/obj-2" --file /tmp/obj.txt --remote        # overwrite
+npx wrangler r2 object delete "$B/demo/obj-3" --remote                          # delete
+npx wrangler r2 bucket notification create $B --event-type object-create --event-type object-delete --queue r2notary-events --description r2notary
+```
+
+Wait longer than `AUDIT_GRACE_SECONDS` (300 s by default), so the changes are outside the grace
+window, then run a scan as in step 2.
+
+## 4. What the auditor found
+
+```sh
+./r2notary findings --log $LOG --vkey "$VKEY" --api $HOST
+./r2notary consistency --log $LOG --vkey "$VKEY" --old before.cp
+./r2notary monitor --log $LOG --vkey "$VKEY" --state mon.json --once
+```
+
+**Expected:** three proven findings of the new scan, `UNLOGGED_OBJECT demo/unlogged`,
+`ETAG_MISMATCH demo/obj-2` and `MISSING_OBJECT demo/obj-3`, with the count confirmed by the
+scan's signed end entry. The log is consistent with `before.cp`, and the monitor prints the
+scan's entries. The report is in the log bucket at `example-log/x-reports/<scanId>.json`.
+
+**Record:** the `findings` output, the scan ID, and the time from starting the scan to `done`.
+
+## 5. Clean up
+
+Delete the demo objects (`npx wrangler r2 object delete "$B/demo/obj-$i" --remote` for each), or the
+whole setup as described in `docs/OPERATIONS.md`. The log keeps its history: that is the point.

@@ -283,6 +283,14 @@ describe('objects view and key index', () => {
   });
 });
 
+/** Removes what schema v3 (M6) added, as a database written by M3-M5 would look. */
+function rollBackV3(sql: SqlStorage): void {
+  for (const t of ['scrub_state', 'scans', 'scan_candidates', 'scan_findings']) {
+    sql.exec(`DROP TABLE ${t}`);
+  }
+  sql.exec('DROP INDEX objects_live');
+}
+
 describe('store internals', () => {
   it('migrations are idempotent and record the schema version', async () => {
     const s = stub();
@@ -301,6 +309,7 @@ describe('store internals', () => {
     await s.append(items(3));
     await runInDurableObject(s, (_, state) => {
       // Roll the schema back to what M2 shipped.
+      rollBackV3(state.storage.sql);
       state.storage.sql.exec('DROP TABLE counters');
       state.storage.sql.exec("UPDATE meta SET v = 1 WHERE k = 'schema_version'");
       const store = new SequencerStore(state.storage);
@@ -308,6 +317,33 @@ describe('store internals', () => {
       expect(store.nextSeq()).toBe(3);
       expect(store.readEntries(0, 3)).toHaveLength(3);
       expect(store.ingestCounters()).toMatchObject({ accepted: 0, invalid: 0, lastInvalid: null });
+    });
+  });
+
+  it('upgrades a v2 database to v3 (auditor tables) and serves its objects view', async () => {
+    const s = stub();
+    await s.append([
+      ...items(2),
+      {
+        eventId: 'del',
+        entry: objectEvent(9, {
+          key: 'obj/1',
+          action: 'DeleteObject',
+          eventTime: '2026-10-02T13:00:00Z',
+        }),
+      },
+    ]);
+    await s.publish();
+    await runInDurableObject(s, (_, state) => {
+      rollBackV3(state.storage.sql);
+      state.storage.sql.exec("UPDATE meta SET v = 2 WHERE k = 'schema_version'");
+      const store = new SequencerStore(state.storage);
+      store.migrate();
+      expect(store.objectStates({ limit: 10, liveOnly: true }).map((o) => o.key)).toEqual([
+        'obj/0',
+      ]);
+      expect(store.objectState('obj/1')).toMatchObject({ deleted: true, seq: 2 });
+      expect(store.scrubState('obj/0')).toBeNull();
     });
   });
 

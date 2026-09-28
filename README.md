@@ -2,14 +2,14 @@
 
 A verifiable, tamper-evident history for Cloudflare R2 buckets: every object change is recorded in a signed Merkle-tree transparency log that is stored in R2 itself, served as static tiles, and independently verifiable by a Go CLI.
 
-> **Status: M5 (MVP: Go verifier and conformance).** `packages/core` implements RFC 6962 hashing and consistency proofs, C2SP `tlog-tiles` tile math, paths and entry bundles, canonical-JSON log entries, and `signed-note` / `tlog-checkpoint` signing with Ed25519 (WebCrypto). The `Sequencer` Durable Object durably appends entries with dedupe, and publishes tiles, bundles and signed checkpoints to R2 in a crash-safe order. A Queue consumer validates R2 event notifications, drops events from the log bucket itself, and appends the rest. The Worker serves the log at `/log/<name>/` with tlog-tiles headers, CORS and gzip for entry bundles, plus a JSON API (`status`, `lookup`, `findings`) and a bearer-protected admin API. With `PUBLIC_LOG=false` (the default), reads need a token. All of this is tested locally in workerd, and has run end to end under `wrangler dev` with synthetic events, with the served bytes verified independently. The Go CLI (`cli/`, no code shared with the writer) verifies checkpoints, inclusion and consistency from tiles, and monitors a log for rollbacks, forks and deletes under a protected prefix. A conformance harness runs the real Worker locally, verifies its log with the Go CLI, then flips bits in every published resource and requires the CLI to reject each one. Local only: nothing has run against real R2 or real event notifications yet, and the auditor arrives in M6 (see `PLAN.md` §9).
+> **Status: M6 (auditor, backfill, deep scrub).** `packages/core` implements RFC 6962 hashing and consistency proofs, C2SP `tlog-tiles` tile math, paths and entry bundles, canonical-JSON log entries, and `signed-note` / `tlog-checkpoint` signing with Ed25519 (WebCrypto). The `Sequencer` Durable Object durably appends entries with dedupe, and publishes tiles, bundles and signed checkpoints to R2 in a crash-safe order. A Queue consumer validates R2 event notifications, drops events from the log bucket itself, and appends the rest. The Worker serves the log at `/log/<name>/` with tlog-tiles headers, CORS and gzip for entry bundles, plus a JSON API (`status`, `lookup`, `findings`) and a bearer-protected admin API. With `PUBLIC_LOG=false` (the default), reads need a token. The Go CLI (`cli/`, no code shared with the writer) verifies checkpoints, inclusion and consistency from tiles, monitors a log for rollbacks, forks and deletes under a protected prefix, and proves an audit's findings. An auditor (a Cloudflare Workflow, every 6 hours or on demand) merge-joins the bucket listing with the log's expected state, records unlogged, missing, overwritten and phantom-deleted objects as findings in the log once they outlast a grace window, optionally hashes object bodies to catch content drift, and resumes from where it stopped after a crash. A backfill logs a baseline for objects that predate the log. A conformance harness runs the real Worker locally, verifies its log and an audit's findings with the Go CLI, then flips bits in every published resource and requires the CLI to reject each one. Local only: nothing has run against real R2 or real event notifications yet; the real-R2 demo (`docs/DEMO.md`) is written but not run (see `PLAN.md` §9).
 
 ## What it will do
 
 - **Ingest:** R2 event notifications → Cloudflare Queue → Worker → a single-writer Sequencer Durable Object.
 - **Log:** an RFC 6962 Merkle tree published as C2SP `tlog-tiles` tiles and entry bundles in a second R2 bucket, with Ed25519 signed checkpoints (`tlog-checkpoint` + `signed-note`).
 - **Verify:** a Go CLI checks checkpoint signatures and computes inclusion and consistency proofs locally from tiles. The server is never trusted for proofs.
-- **Audit:** a resumable job reconciles real bucket contents against the log and records unlogged writes, missing objects and drift as findings in the log.
+- **Audit:** a resumable Workflow reconciles real bucket contents against the log and records unlogged writes, missing objects and drift as findings in the log. A finding is recorded only if no event explains it within the grace window (`AUDIT_GRACE_SECONDS`), so changes still in flight are not reported.
 
 ## Positioning
 
@@ -74,8 +74,17 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" localhost:8787/api/v1/ad
 ./r2notary consistency --log http://localhost:8787/log/example-log --vkey "$VKEY" --old old.cp
 ```
 
+To audit the bucket (locally the monitored bucket is empty, so every live key is reported
+missing), start a scan and verify its findings; each one is proven against the signed log and the
+count is checked against the scan's signed end entry:
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" localhost:8787/api/v1/admin/scan
+./r2notary findings --log http://localhost:8787/log/example-log --vkey "$VKEY" --api http://localhost:8787
+```
+
 Exit codes: 0 ok, 1 verification failed (the log served data that does not verify), 2 usage,
-3 negative answer (no such entry, or a `--watch` alert), 4 could not verify (network, HTTP). `npm run simulate` and `npm run keygen` run TypeScript directly, which needs
+3 negative answer (no such entry, a `--watch` alert, or no audit yet), 4 could not verify (network, HTTP). `npm run simulate` and `npm run keygen` run TypeScript directly, which needs
 Node ≥ 22.18.
 
 `npm run test:contract:remote` runs the R2 conditional-write contract against a real bucket. It is

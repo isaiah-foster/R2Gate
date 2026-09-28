@@ -41,7 +41,7 @@ npx wrangler types           # run in worker/ after editing wrangler.jsonc
 npm run dev:sim              # local wrangler dev: r2notary + dev-only event simulator (needs SIGNING_KEY)
 npm run simulate -- --help   # send synthetic R2 notifications to dev:sim; compare /api/v1/status
 npm run keygen -- --origin <LOG_ORIGIN> --out worker/.dev.vars   # local secrets (gitignored)
-npm run conformance          # M5: wrangler dev writer -> Go verifier + corruption (~1 min; --keep)
+npm run conformance          # wrangler dev writer -> Go verifier, audit findings, corruption (~1 min)
 
 cd cli && go vet ./... && go test ./...
 cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI runs
@@ -92,4 +92,12 @@ cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI r
   `tilefetch.TilePath`). Go tests build logs with `internal/testlog` (Go-only writer). The
   conformance harness passes secrets with `wrangler dev --env-file` (skips `.dev.vars`; process env
   is merged too, so it strips config keys from the child env, D5.7).
+- Auditor (M6): scan state lives in the Sequencer (`worker/src/audit/store.ts`); each step is one
+  synchronous transaction and is idempotent by page number / state, so a re-run step does nothing
+  twice. The Workflow (`audit/scan.ts`) only drives it; keep control flow a function of step
+  results (replay). Compare keys with core `compareUtf8`, never `<` (D6.2). List pages with
+  `startAfter` only: Miniflare loops if `cursor` and `startAfter` are combined (D6.3). Findings are
+  confirmed only if the key's `objects` row is unchanged after the grace window (D6.5). Worker
+  tests run with `AUDIT_GRACE_SECONDS=0` and `DEEP_SCRUB_SAMPLE_RATE=1` (vitest.config.ts).
+  `x-reports/` is create-if-absent but, unlike tiles, not a pure function of the log prefix (D6.11).
 - Commit trailer: end commits with the attribution line the harness specifies.

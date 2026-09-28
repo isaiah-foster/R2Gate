@@ -859,3 +859,246 @@ resource of a 700-entry tree is a verification failure.
   conformance job included, was run locally.
 - **Third-party tlog-tiles client** (PLAN §10, optional): not tried.
 - **`findings` command:** M6.
+
+## M6: Auditor, backfill, deep scrub (2026-10-03)
+
+Docs checked for this milestone (2026-10-02): Workflows Workers API (`step.do` config, step result
+limits, `create`/`createBatch`, instance IDs, `NonRetryableError`), Workflows limits, Workers
+limits (subrequests), R2 Workers API reference (`list`, `R2ListOptions`, `get` with `onlyIf`,
+checksums), R2 S3 API compatibility (ListObjectsV2), Workers Web Crypto (`DigestStream`), Vitest
+integration test APIs (Workflows introspection), the wrangler config schema (`secrets`). Code:
+`worker/src/audit/{reconcile,store,scan,scan-workflow,scrub,alert}.ts`, schema v3 in
+`worker/src/store.ts`, `cli/cmd/r2notary/findings.go`.
+
+### D6.1 Where the scan state lives: in the Sequencer, with the Workflow as a driver
+
+- **Decision:** every step of a scan is one synchronous transaction in the Sequencer DO
+  (`audit/store.ts`): the merge-join reads the `objects` view and records its result in the same
+  transaction, and a step's log entries, counters and cursor commit together. The Workflow
+  (`audit/scan.ts`) lists the bucket, hashes bodies, sleeps, and calls those steps. It holds nothing
+  a replay cannot rebuild from step results.
+- **Alternatives:** the cursor only in Workflow step results (PLAN §5.6). Then a step that commits
+  findings and crashes before its result is persisted would append them again, and a scan could not
+  continue in another instance. A separate auditor DO: it would have to read the `objects` view over
+  RPC, so a publication could commit between reading the expected state and acting on it.
+- **Why:** exactly-once effects per step without distributed bookkeeping. The Sequencer is already
+  the single writer, and the auditor's appends go through the same dedupe and publication path as
+  events.
+- **One scan at a time.** `scanStart` refuses while another scan is active. A scan with no progress
+  for 24 hours (`STALE_SCAN_MS`) is marked `abandoned` by the next start, so a dead instance cannot
+  block audits forever. An abandoned scan's `audit.scan` start entry stays in the log without an end
+  entry, which is an honest record.
+
+### D6.2 Key order is UTF-8 byte order, checked rather than assumed
+
+- **Docs say:** R2 `list()` returns keys "ordered lexicographically", without saying over what.
+  SQLite's BINARY collation compares UTF-8 bytes (`memcmp`).
+- **Problem:** JavaScript's `<` compares UTF-16 code units. It puts astral characters
+  (U+10000 and up, surrogate pairs) before U+E000..U+FFFF, while UTF-8 order puts them after. A
+  merge-join with the wrong comparison skips or double-counts keys silently.
+- **Decision:** core gets `compareUtf8` (code-point comparison, property-tested against byte
+  comparison of the encodings). The merge-join uses it everywhere and **rejects** a listing or a row
+  stream that is not strictly increasing in that order, rather than merging it wrongly.
+- **Tests (PLAN M6 "Unicode-key ordering test"):** `worker/test/contract/r2-list-order.ts` checks
+  that `list()` returns 18 keys chosen so the two orders differ in UTF-8 order, and that `startAfter`
+  returns exactly the keys after it (present or not). The same contract is in the opt-in remote
+  harness (`npm run test:contract:remote`), **not yet run against real R2**. A DO test checks that
+  SQLite's `ORDER BY key` and `key > ?` agree with `compareUtf8`.
+
+### D6.3 `startAfter` is used, and pinned by the contract test
+
+- **Docs say:** the Workers API reference lists `limit`, `prefix`, `cursor`, `delimiter` and
+  `include` for `R2ListOptions`. `startAfter` is in `@cloudflare/workers-types` and R2's S3 API
+  lists ListObjectsV2 `start-after` as supported, but the Workers reference does not mention it.
+- **Decision:** each page lists with `startAfter: <previous page's end>`, never with a cursor. The
+  merge-join's page end can fall inside a listing page (when the log side is truncated first), and
+  only a key can express that. A key also never expires, unlike an opaque cursor.
+- **Fallback** if real R2 ignores `startAfter`: re-list from the previous cursor and skip keys up
+  to the page end (costs an extra Class A list per page).
+- **Local quirk found:** Miniflare combines `cursor` with `startAfter` using a JavaScript string
+  comparison. With astral keys a listing that passes both can loop forever (observed: a probe
+  returned `x`, `😀`, `x`, `😀`, ...). The auditor never passes both, and the contract
+  test pages by `startAfter` alone, as the auditor does, with every loop bounded.
+
+### D6.4 Finding conditions (PLAN §5.6 table, made exact)
+
+`reconcilePage` (pure) compares one page of the listing with the log's expected state. With `G`
+the grace window, `now` the observation time, and `quiet(t)` meaning `t <= now - G`:
+
+| Kind              | Condition                                                     |
+| ----------------- | ------------------------------------------------------------- |
+| `UNLOGGED_OBJECT` | listed, no row in the log, `quiet(uploaded)`                  |
+| `MISSING_OBJECT`  | live row, not listed, `quiet(eventTime)`                      |
+| `PHANTOM_DELETE`  | listed, row deleted, `quiet(max(uploaded, eventTime))`        |
+| `ETAG_MISMATCH`   | listed, live row with an ETag that differs, `quiet(max(...))` |
+| `SIZE_MISMATCH`   | same, ETag equal or not logged, size differs                  |
+
+- **Deviation:** the plan reports a mismatch or phantom delete only when `uploaded` is newer than
+  the logged event. An object _older_ than the logged event that contradicts it (a delete that did
+  not happen, a PUT whose object is not there) is divergence too, so both orders are reported once
+  both times are outside the grace window. The finding records both times.
+- Only what the log recorded is compared: a create logged without an ETag or size is not a
+  mismatch on that field. One finding per key per scan; `ETAG_MISMATCH` wins over `SIZE_MISMATCH`.
+- A divergence that persists is reported again by every scan: each scan is a separate observation.
+- **Pages:** each side is read with a limit, so a page covers keys up to the smaller last key of
+  whichever side was truncated. A property test checks that any combination of page sizes produces
+  exactly the findings of a per-key oracle.
+
+### D6.5 Confirmation after the grace window (an addition to the plan)
+
+- **Problem:** the plan's grace window cannot protect `MISSING_OBJECT`. Its only timestamp is the
+  log's `eventTime`; when the object was deleted is unknown. An object deleted one second before the
+  listing, whose notification is still in the queue, would be reported missing.
+- **Decision:** a page records **candidates**, each with the `seq` of the `objects` row it was
+  judged against (or none). After the listing, the scan sleeps until every candidate is at least
+  `G` old, publishes everything durable, and confirms: a candidate becomes an `audit.finding` only
+  if the row for its key is still the same. Any event for the key that arrived since explains it,
+  and the candidate is dropped (counted as `dropped`; the next scan judges the key again). The
+  Sequencer itself refuses to confirm a candidate younger than `G`, so this does not depend on the
+  Workflow sleeping correctly.
+- **What `G` now means:** notification delivery, queue retries and publication must all complete
+  within `AUDIT_GRACE_SECONDS`. The page-time conditions above are kept as well (as the plan says);
+  they avoid creating candidates that would almost always be dropped.
+- **Cost:** a scan takes at least `G` after its last page. `step.sleep` costs nothing (not a step,
+  no subrequests, the instance is not "running").
+- `observedAt` in a finding is when the divergence was seen, not when it was confirmed.
+
+### D6.6 Exactly-once steps and resumability
+
+- Page `n` is applied only if `n` equals the scan's page count and `after` its cursor. Re-sending
+  the last applied page returns its stored result and changes nothing. Scrub results are applied
+  once per page (`observed_through`). A candidate is deleted in the transaction that appends its
+  finding. Start, end and report steps are state transitions. So a step re-run after it committed
+  (a crash before Workflows stored its result) has no effect.
+- **Event IDs** of audit entries are derived from the scan and step (`find:<scanId>:<candidate>`,
+  `obs:<scanId>:<page>:<i>`, ...), not hashed: the idempotency comes from the state machine, and
+  synchronous IDs keep each step free of awaits inside its transaction.
+- **Expected failures are values.** A wrong state or an out-of-sequence page is returned as
+  `{ok: false, reason}`; the Workflow turns it into a `NonRetryableError`. Thrown errors would cross
+  RPC without their class, and the test pool reports rejected DO RPCs as unhandled (D2.9). The
+  engine reports such an instance with a generic message ("a step threw an NonRetryableError"), so
+  the reason is also logged.
+- **Tests:** `audit-scan.test.ts` runs the driver with a step runner that replays as Workflows do
+  (stored results by step name, `run()` restarted after a crash), then crashes once at **every**
+  step of a full scan, before and after the step body: each run ends with the same published log as
+  the uncrashed one, no entry missing or doubled, and the same step sequence. The real `ScanWorkflow`
+  class also runs under the local Workflows engine with an injected step failure
+  (`mockStepError`), from the admin API, and from the cron handler.
+
+### D6.7 Limits, budgets and hand-off
+
+- **Docs say (Workflows limits):** Free: 1,024 steps per instance, 10 ms CPU per step, 1 MiB per
+  step result; Paid: 10,000 steps (configurable to 25,000), 30 s CPU per step. Subrequests are
+  listed per instance ("50/request" Free, "10,000/request" Paid), and the subrequest section adds
+  that Free Workers are limited to 50 external subrequests and **1,000 to Cloudflare services** per
+  invocation. R2 and DO calls are Cloudflare services.
+- **Correction to D0.5**, which said 50 subrequests per invocation on Free for Workflows: that is
+  the limit for _external_ fetches; R2 and Durable Object calls count against 1,000.
+- **Decision:** each instance budgets 900 subrequests and 1,000 steps (`DEFAULT_BUDGET`, the Free
+  limits less a margin, used on every plan). A page costs 2 (list, Sequencer), plus up to 21 with
+  deep scrub. When the next page might not fit, the instance starts `<scanId>-p<n+1>` with
+  `createBatch`, which is idempotent per ID (`create` throws if the ID exists, and the step may be
+  retried), and ends. The new instance resumes from the Sequencer's cursor. A budget that cannot fit
+  one page is rejected, so hand-offs always make progress.
+- **Not measured:** whether a 1,000-object page fits in 10 ms of CPU on the Free plan (list
+  parsing, RPC serialization, the merge in the DO is the DO's CPU, not the step's). Deep scrub is
+  likely to exceed it. This is a §14 benchmark question (M7); the page size is a single constant.
+- Steps retry 5 times with exponential backoff from 10 s, and time out after 15 minutes.
+
+### D6.8 Deep scrub
+
+- **Sampling:** an object is scrubbed if the first 32 bits of `SHA-256([scanId, key])` are below
+  `DEEP_SCRUB_SAMPLE_RATE`, it is at most `DEEP_SCRUB_MAX_BYTES`, and the page has scrubbed fewer
+  than 20. Deterministic per scan (a retried step picks the same objects), different across scans.
+- **Read:** `get(key, {onlyIf: {etagMatches: <listed ETag>}})`. The docs say a failed precondition
+  returns an `R2Object` without a body: the object changed since it was listed and is skipped, as
+  is a deleted one. The body is piped into `crypto.DigestStream('SHA-256')`. A short read
+  (`bytesWritten` differs from the object's size) fails the step instead of recording a wrong hash.
+- **Records:** an `audit.observation` per object. `CONTENT_DRIFT` when the SHA-256 differs from the
+  last _published_ observation of the same key **with the same ETag** (kept in a new `scrub_state`
+  table, updated at commit like the `objects` view), or from the SHA-256 R2 stored at upload, if the
+  uploader supplied one. R2 rejects an upload whose bytes do not match a supplied `sha256` (D2.11),
+  so the second case can only be produced with a fake bucket; it is tested at the store level.
+- **Default off** (`"0"`): it costs a Class B read and CPU per object. Throughput is an M7 question.
+
+### D6.9 Entry schema changes (D1.6 said the `audit.*` shapes were provisional)
+
+- `CONTENT_DRIFT` is a finding kind. `observed` and `expected` gain an optional `sha256`, which is
+  required for `CONTENT_DRIFT` and forbidden for every other kind.
+- `expected.seq` is required except for `CONTENT_DRIFT` against R2's stored checksum, which no log
+  entry holds.
+- Unchanged otherwise. Nothing has been published, so the change is free. The Go CLI does not
+  validate the schema (it reads the few fields it acts on), so it needed no change for this.
+
+### D6.10 Backfill
+
+- `POST /api/v1/admin/backfill` runs the same Workflow in `backfill` mode: it lists the bucket and
+  appends an `object.snapshot` (with `snapshotId` = the scan ID) for each object the log has
+  **never named**. A key the log knows, even as deleted or with another ETag, is left to the
+  auditor: snapshotting it would replace evidence of a divergence with a new baseline.
+- A backfill writes no `audit.scan` entries and no report; the snapshots identify it.
+
+### D6.11 Reports, the findings API, and `r2notary findings`
+
+- **Report:** `x-reports/<scanId>.json` in the log bucket (counts, findings by kind, and the first
+  10,000 findings as `{index, kind, key}`), written create-if-absent after the end entry is
+  published, then the scan is marked done. Unlike tiles it is **not** a pure function of the log
+  prefix (it has start and finish times and the number of dropped candidates), but it is built only
+  from state that is fixed once the scan's end entry exists, so a retried write produces the same
+  bytes. It is a convenience, not evidence, and the read path does not serve it (D4.5).
+- **`GET /api/v1/findings[?after=&limit=]`** now returns the latest audit (`scan`, without its
+  cursor, which is a key name), the published size, and its findings as `{index, published, entry}`.
+  Findings of earlier scans are pruned from SQLite when a newer scan finishes; the log keeps them
+  all. `/api/v1/status` gains `audit`, the latest audit's summary.
+- **Go CLI `findings --log URL --vkey V --api URL`** (deferred in D5.5). Like `inclusion --api`, it
+  takes only indexes from the API and proves each entry against the signed checkpoint, and it
+  checks that each is an `audit.finding` of that scan. **It also compares the number of findings
+  with the count in the scan's signed `audit.scan` end entry**, so the API cannot hide a finding of
+  a finished scan. Plan deviation: the token comes from `$R2NOTARY_TOKEN` or `--token-file` (D5.5),
+  not `--token`, and `--log`/`--vkey` are required, since a listing that is not proven is what
+  `curl` already gives.
+
+### D6.12 Starting scans; the webhook
+
+- **Cron** (`0 */6 * * *`, already in `wrangler.jsonc`): the scan ID is `audit-cron-<scheduledTime>`,
+  so a trigger delivered twice starts one instance. **Admin:** `POST /api/v1/admin/{scan,backfill}`
+  answers 202 with the scan ID, or 409 with the active scan. Both check for an active scan first;
+  the check is advisory and the Sequencer's start step is what enforces it.
+- **Webhook** (`ALERT_WEBHOOK_URL`, optional secret): one POST per audit with findings, with counts,
+  log indexes and the report key, **never key names** (the receiver may be a chat service). https
+  only. Retried 3 times; a failure is logged and does not fail the scan (the findings are in the log
+  either way). Delivery is at least once. wrangler's `secrets` config only has `required`, so the
+  secret is undeclared and read defensively. Not verified: whether `wrangler dev` passes an
+  undeclared secret from `.dev.vars` when `secrets.required` is set (the webhook is tested with an
+  injected fetch).
+
+### D6.13 Testing notes
+
+- New suites: `reconcile` (pure, with the pagination property), `audit-store` (explicit clocks:
+  lifecycle, page replay, grace, drops, drift, report, backfill), `audit-scan` (the driver: every
+  finding kind with Unicode keys, crash at every step, hand-off, an event published during the grace
+  window, deep scrub, alerts), `audit-workflow` (the real Workflow class), `scrub`,
+  `r2-list-order`, and Go `findings`. The test pool sets `AUDIT_GRACE_SECONDS=0` and
+  `DEEP_SCRUB_SAMPLE_RATE=1` (`worker/vitest.config.ts`), because the end-to-end tests cannot wait
+  out a real window; unit tests pass both explicitly.
+- **Conformance harness:** a new stage starts an audit through the admin API under `wrangler dev`
+  (local Workflows). The local monitored bucket is empty, so every key the simulator left live must
+  be a `MISSING_OBJECT`; the Go CLI proves each finding and matches the signed count, and the log
+  must still extend the archived checkpoints. Run 2026-10-02: all 207 checks passed.
+- **Mutation check:** each was broken on purpose and tests failed: UTF-16 comparison (9 failures
+  across core and worker), confirmation ignoring the basis row (2), no page replay (3), scrub
+  results applied twice (4), page end ignoring the log side (3), no grace on uploads (2), confirm
+  without publishing first (1), backfill snapshotting known keys (2), listing without `startAfter`
+  (9), drift ignoring the ETag (1), MISSING ignoring grace (2), PHANTOM only for re-created objects
+  (2), and in Go, `findings` without the signed-count check (1).
+
+### D6.14 Not done in M6
+
+- **The real-R2 demo (PLAN M6, needs approval).** `docs/DEMO.md` has the runbook; nothing has been
+  deployed or run remotely. Before it, D3.7's open questions must be answered with real events: in
+  particular, if R2 URL-encodes keys in notifications, the auditor will report every such key as
+  both `UNLOGGED_OBJECT` and `MISSING_OBJECT`.
+- **Real-R2 contract runs:** conditional writes (D2.1) and list order / `startAfter` (D6.2, D6.3).
+- **Measurements:** auditor objects/s, deep-scrub MB/s, CPU per page (M7, §14). No figure is
+  claimed.
+- Findings of scans before the latest are only in the log (and the reports), not in the API.

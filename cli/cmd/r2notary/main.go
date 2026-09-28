@@ -7,8 +7,8 @@
 //	1  verification failed: the log served data that does not verify (bad signature, corrupt
 //	   tile or bundle, inconsistent or rolled-back checkpoint). This is evidence, not an outage.
 //	2  usage error
-//	3  verified, but the answer is negative: no entry for --key or --index, or a --watch alert
-//	   (monitor --once)
+//	3  verified, but the answer is negative: no entry for --key or --index, a --watch alert
+//	   (monitor --once), or no audit has run (findings)
 //	4  verification could not be completed (network error, HTTP error, local file error)
 package main
 
@@ -52,13 +52,15 @@ const usage = `usage: r2notary <command> [flags]
   inclusion   --log URL --vkey V (--index N | --key K [--api URL])
   consistency --log URL --vkey V --old FILE [--new FILE]
   monitor     --log URL --vkey V --state FILE [--watch PREFIX] [--interval 10s] [--once] [-q]
+  findings    --log URL --vkey V --api URL
   version
 
 --log is the log's URL prefix (https://host/log/<name>). --vkey is the verifier key, or @FILE.
 --origin overrides the expected checkpoint origin (default: the vkey's name). For a private log,
 put the read token in $R2NOTARY_TOKEN or pass --token-file FILE.
 Run 'r2notary <command> -h' for details. Exit codes: 0 ok, 1 verification failed, 2 usage,
-3 negative result (key not found, watch alert), 4 could not verify (network, HTTP, files).
+3 negative result (key not found, watch alert, no audit), 4 could not verify (network, HTTP,
+files).
 `
 
 func main() {
@@ -79,6 +81,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		"inclusion":   cmdInclusion,
 		"consistency": cmdConsistency,
 		"monitor":     cmdMonitor,
+		"findings":    cmdFindings,
 	}
 	if args[0] == "version" && len(args) == 1 {
 		fmt.Fprintln(stdout, "r2notary", version)

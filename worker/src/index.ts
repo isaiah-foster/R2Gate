@@ -1,5 +1,6 @@
 import { parseLogPath } from '@r2notary/core';
 import { READ_ROUTES, admin, readApi, type ApiDeps } from './api.ts';
+import { startScan } from './audit/scan.ts';
 import { hasToken, parseAccess, type Access } from './auth.ts';
 import { parseConfig, type Config } from './config.ts';
 import { CORS_HEADERS, methodNotAllowed, notFound, text, unauthorized } from './http.ts';
@@ -8,7 +9,7 @@ import { checkMethod, preflight, serveResource } from './readpath.ts';
 import type { Sequencer } from './sequencer.ts';
 
 export { Sequencer } from './sequencer.ts';
-export { ScanWorkflow } from './scan-workflow.ts';
+export { ScanWorkflow } from './audit/scan-workflow.ts';
 
 // Vars are fixed for the life of an isolate, so they are parsed once per env object; a bad
 // deployment fails on its first request or batch instead of misbehaving.
@@ -57,7 +58,12 @@ async function route(request: Request, env: Env): Promise<Response> {
   const access = getAccess(env);
   const url = new URL(request.url);
   const path = url.pathname;
-  const deps: ApiDeps = { config: cfg, sequencer: sequencer(env, cfg), bucket: env.LOG };
+  const deps: ApiDeps = {
+    config: cfg,
+    sequencer: sequencer(env, cfg),
+    bucket: env.LOG,
+    workflow: env.SCAN_WORKFLOW,
+  };
 
   if (path.startsWith(ADMIN_PREFIX)) {
     if (!(await hasToken(request, [access.adminToken]))) return unauthorized();
@@ -110,5 +116,22 @@ export default {
       sink: { ingest: (items, report) => stub.ingest(items, report) },
       now: Date.now,
     });
+  },
+
+  /**
+   * Cron trigger: start an audit unless one is running. The ID is derived from the scheduled time,
+   * so a trigger delivered twice starts one scan (createBatch is idempotent per ID).
+   */
+  async scheduled(controller, env): Promise<void> {
+    const cfg = getConfig(env);
+    const scanId = `audit-cron-${String(controller.scheduledTime)}`;
+    const r = await startScan(
+      { sequencer: sequencer(env, cfg), workflow: env.SCAN_WORKFLOW },
+      'audit',
+      scanId,
+    );
+    if (!r.started) {
+      console.warn(`r2notary cron: ${r.active.scanId} is still running; not starting ${scanId}`);
+    }
   },
 } satisfies ExportedHandler<Env>;

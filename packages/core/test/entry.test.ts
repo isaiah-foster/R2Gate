@@ -5,11 +5,14 @@ import {
   MAX_OBJECT_KEY_BYTES,
   decodeEntry,
   encodeEntry,
+  type AuditFinding,
   type Entry,
   type ObjectEvent,
 } from '../src/entry.ts';
 
 const enc = new TextEncoder();
+const SHA_A = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+const SHA_B = 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb';
 const dec = new TextDecoder();
 
 const put: ObjectEvent = {
@@ -90,6 +93,18 @@ const valid: Entry[] = [
   { v: 1, type: 'audit.scan', scanId: 'scan-1', phase: 'end', objectsScanned: 10, findings: 2 },
   {
     v: 1,
+    type: 'audit.finding',
+    kind: 'ETAG_MISMATCH',
+    bucket: 'my-bucket',
+    key: 'a',
+    observed: { etag: 'def', size: 1, uploaded: '2026-01-01T00:05:00Z' },
+    expected: { etag: 'abc', size: 1, eventTime: '2026-01-01T00:00:00Z', seq: 7 },
+    scanId: 'scan-1',
+    observedAt: '2026-01-01T00:10:00Z',
+    graceSeconds: 0,
+  },
+  {
+    v: 1,
     type: 'audit.observation',
     bucket: 'my-bucket',
     key: 'a',
@@ -99,7 +114,38 @@ const valid: Entry[] = [
     scanId: 'scan-1',
     observedAt: '2026-01-01T00:10:00Z',
   },
+  // Deep scrub: the bytes changed but the ETag did not, against an earlier logged observation...
+  {
+    v: 1,
+    type: 'audit.finding',
+    kind: 'CONTENT_DRIFT',
+    bucket: 'my-bucket',
+    key: 'a',
+    observed: { etag: 'abc', size: 1, uploaded: '2026-01-01T00:00:00Z', sha256: SHA_B },
+    expected: { etag: 'abc', size: 1, eventTime: '2025-12-01T00:00:00Z', seq: 9, sha256: SHA_A },
+    scanId: 'scan-1',
+    observedAt: '2026-01-01T00:10:00Z',
+    graceSeconds: 300,
+  },
+  // ... or against the SHA-256 R2 stored at upload, which has no log index.
+  {
+    v: 1,
+    type: 'audit.finding',
+    kind: 'CONTENT_DRIFT',
+    bucket: 'my-bucket',
+    key: 'a',
+    observed: { etag: 'abc', size: 1, uploaded: '2026-01-01T00:00:00Z', sha256: SHA_B },
+    expected: { etag: 'abc', eventTime: '2026-01-01T00:00:00Z', sha256: SHA_A },
+    scanId: 'scan-1',
+    observedAt: '2026-01-01T00:10:00Z',
+    graceSeconds: 300,
+  },
 ];
+const drift = valid.find(
+  (e): e is AuditFinding => e.type === 'audit.finding' && e.kind === 'CONTENT_DRIFT',
+);
+const observation = valid.find((e) => e.type === 'audit.observation');
+const mismatch = valid.find((e) => e.type === 'audit.finding' && e.kind === 'ETAG_MISMATCH');
 
 describe('entry encoding', () => {
   it.each(valid.map((e) => [`${e.type}${'action' in e ? ` ${e.action}` : ''}`, e] as const))(
@@ -178,8 +224,34 @@ describe('entry encoding', () => {
     ['scan with unknown phase', { ...valid[9], phase: 'middle' }],
     ['scan start with end-only fields', { ...valid[9], findings: 1 }],
     [
+      'CONTENT_DRIFT without observed sha256',
+      { ...drift, observed: { ...drift?.observed, sha256: undefined } },
+    ],
+    [
+      'CONTENT_DRIFT without expected sha256',
+      { ...drift, expected: { ...drift?.expected, sha256: undefined } },
+    ],
+    [
+      'sha256 on an ETAG_MISMATCH',
+      {
+        ...mismatch,
+        observed: { etag: 'd', size: 1, uploaded: '2026-01-01T00:00:00Z', sha256: SHA_A },
+      },
+    ],
+    [
+      'ETAG_MISMATCH without expected seq',
+      { ...mismatch, expected: { etag: 'abc', eventTime: '2026-01-01T00:00:00Z' } },
+    ],
+    [
+      'MISSING_OBJECT without expected seq',
+      { ...valid[7], expected: { eventTime: '2026-01-01T00:00:00Z' } },
+    ],
+    [
       'observation with uppercase sha256',
-      { ...valid[11], sha256: 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855' },
+      {
+        ...observation,
+        sha256: 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
+      },
     ],
   ];
 

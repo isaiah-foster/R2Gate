@@ -18,6 +18,12 @@ type Info struct {
 	Key    string
 	HasKey bool
 	Action string
+	// Auditor fields (audit.finding, audit.scan).
+	ScanID      string
+	Phase       string
+	Kind        string
+	Findings    int64
+	HasFindings bool
 }
 
 // Parse reads an entry. Field names are matched exactly (encoding/json's struct decoding would
@@ -41,6 +47,12 @@ func Parse(b []byte) Info {
 	}
 	info.Key, info.HasKey = str("key")
 	info.Action, _ = str("action")
+	info.ScanID, _ = str("scanId")
+	info.Phase, _ = str("phase")
+	info.Kind, _ = str("kind")
+	if raw, ok := m["findings"]; ok {
+		info.HasFindings = json.Unmarshal(raw, &info.Findings) == nil
+	}
 	return info
 }
 
@@ -66,6 +78,16 @@ func (i Info) IsDelete() bool {
 func (i Info) IsWrite() bool {
 	return i.Valid && i.V == 1 && i.Type == "object.event" &&
 		(i.Action == "PutObject" || i.Action == "CopyObject" || i.Action == "CompleteMultipartUpload")
+}
+
+// IsFinding reports whether the entry is an auditor finding of the given scan.
+func (i Info) IsFinding(scanID string) bool {
+	return i.Valid && i.V == 1 && i.Type == "audit.finding" && i.ScanID == scanID
+}
+
+// IsScan reports whether the entry is the given scan's audit.scan entry for phase.
+func (i Info) IsScan(scanID, phase string) bool {
+	return i.Valid && i.V == 1 && i.Type == "audit.scan" && i.ScanID == scanID && i.Phase == phase
 }
 
 // IsSnapshot reports whether the entry is a backfill snapshot of an existing object.
