@@ -46,6 +46,8 @@ export interface SequencerStatus {
   readonly ingest: IngestCounters;
   /** The most recent audit scan (M6), in any state. */
   readonly audit: ScanSummary | null;
+  /** The most recent backfill, in any state (M7: otherwise only visible in Workflows tooling). */
+  readonly backfill: ScanSummary | null;
 }
 
 export interface FindingsPage {
@@ -268,6 +270,7 @@ export class Sequencer extends DurableObject<Env> {
       alarmAt: await this.ctx.storage.getAlarm(),
       ingest: this.#store.ingestCounters(),
       audit: this.#audit.latest('audit'),
+      backfill: this.#audit.latest('backfill'),
     };
   }
 

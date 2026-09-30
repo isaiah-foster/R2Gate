@@ -5,9 +5,11 @@ the bucket behind the log's back and let the auditor find it.
 
 > **Status: not yet run.** Every step below creates, changes or bills for resources in a Cloudflare
 > account, so the repository owner runs it or approves it (PLAN §0, working agreement 4). When it
-> has run, the date, wrangler version and the output of each "Record" step go here. PLAN M7 extends
-> this file with the remaining parts of the demo (corrupting a tile, a consistency proof across a
-> longer history).
+> has run, the date, wrangler version and the output of each "Record" step go here.
+>
+> The same story runs locally with no account: the README quickstart (dev simulator instead of real
+> notifications, local R2 instead of real R2). That version was run from a clean copy of the
+> repository on 2026-10-03 and behaved as described there (DECISIONS D7.10).
 
 Commands were checked against `wrangler` 4.147.0 `--help` on 2026-10-03. Bucket, queue and host
 names are the committed placeholders; use your own.
@@ -32,7 +34,7 @@ auth=(-H "Authorization: Bearer $ADMIN_TOKEN")
 ## 1. Log ordinary writes
 
 ```sh
-for i in $(seq 1 100); do
+for i in $(seq 1 300); do   # 300, so that step 5 has a full tile to corrupt
   echo "object $i" > /tmp/obj.txt
   npx wrangler r2 object put "$B/demo/obj-$i" --file /tmp/obj.txt --remote
 done
@@ -41,7 +43,7 @@ npx wrangler r2 object put "$B/demo/with space/é+%.txt" --file /tmp/special.txt
 ```
 
 Wait for the events to be published (`curl -s -H "Authorization: Bearer $R2NOTARY_TOKEN"
-$HOST/api/v1/status` shows `size` of at least 101 and `pending` 0), then:
+$HOST/api/v1/status` shows `size` of at least 301 and `pending` 0), then:
 
 ```sh
 ./r2notary checkpoint --log $LOG --vkey "$VKEY" --out before.cp
@@ -102,7 +104,30 @@ scan's entries. The report is in the log bucket at `example-log/x-reports/<scanI
 
 **Record:** the `findings` output, the scan ID, and the time from starting the scan to `done`.
 
-## 5. Clean up
+## 5. Tamper with the log, and catch it
+
+Someone with write access to the log bucket (but not the signing key) changes one bit of a
+published tile. Keep the original to restore it:
+
+```sh
+tile=example-log-bucket/example-log/tile/0/000
+npx wrangler r2 object get $tile --remote --file tile.orig
+node -e "const f=require('fs'); const b=f.readFileSync('tile.orig'); b[100]^=1; f.writeFileSync('tile.bad', b)"
+npx wrangler r2 object put $tile --remote --file tile.bad
+./r2notary inclusion --log $LOG --vkey "$VKEY" --index 0; echo "exit $?"           # exit 1
+./r2notary monitor --log $LOG --vkey "$VKEY" --state fresh.json --once -q; echo "exit $?"   # exit 1
+npx wrangler r2 object put $tile --remote --file tile.orig                           # restore
+./r2notary inclusion --log $LOG --vkey "$VKEY" --index 0 > /dev/null; echo "exit $?"  # exit 0
+```
+
+`tile/0/000` is the first full tile; it exists because step 1 wrote more than 256 objects. The
+replacement does not keep the original's stored HTTP metadata, which does not matter here: the read
+path sets headers by resource kind (D4.5). Do **not** do this on a log with Workers Cache enabled: the
+corrupted tile could be cached for a year.
+
+**Record:** the two `exit 1` lines and the CLI's error messages.
+
+## 6. Clean up
 
 Delete the demo objects (`npx wrangler r2 object delete "$B/demo/obj-$i" --remote` for each), or the
 whole setup as described in `docs/OPERATIONS.md`. The log keeps its history: that is the point.

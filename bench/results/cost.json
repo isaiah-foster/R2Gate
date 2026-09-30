@@ -1,0 +1,435 @@
+{
+  "benchmark": "PLAN §14.7 cost model (arithmetic over amplification.json; not a measurement)",
+  "environment": {
+    "date": "2026-10-03T07:23:20.811Z",
+    "commit": "f35a560",
+    "dirty": true,
+    "os": "linux 7.2.5-4-omarchy",
+    "cpu": "AMD Ryzen 5 3600 6-Core Processor",
+    "cpus": 12,
+    "memoryGiB": 16,
+    "node": "v26.10.0",
+    "go": "go1.27.1-X:nodwarf5",
+    "wrangler": "4.147.0",
+    "workerd": "1.20261001.1",
+    "runtime": "Node.js; computation only"
+  },
+  "inputs": {
+    "amplification": "bench/results/amplification.json (2026-10-03T07:23:06.895Z, commit f35a560)",
+    "monthSeconds": 2592000,
+    "batchMaxEntries": 500,
+    "queueMaxBatchSize": 100,
+    "queueMaxBatchTimeoutSeconds": 5,
+    "pruneRowsWrittenPerEntry": 1,
+    "prices": {
+      "r2": {
+        "source": "https://developers.cloudflare.com/r2/pricing/ (last updated 2026-10-01)",
+        "storagePerGBMonth": 0.015,
+        "classAPerMillion": 4.5,
+        "classBPerMillion": 0.36,
+        "included": {
+          "storageGBMonth": 10,
+          "classA": 1000000,
+          "classB": 10000000
+        }
+      },
+      "durableObjects": {
+        "source": "https://developers.cloudflare.com/durable-objects/platform/pricing/ (last updated 2026-09-30)",
+        "requestsPerMillion": 0.15,
+        "rowsWrittenPerMillion": 1,
+        "rowsReadPerMillion": 0.001,
+        "included": {
+          "requests": 1000000,
+          "rowsWritten": 50000000,
+          "rowsRead": 25000000000
+        }
+      },
+      "queues": {
+        "source": "https://developers.cloudflare.com/queues/platform/pricing/ (as of 2026-04-21)",
+        "operationsPerMillion": 0.4,
+        "operationsPerMessage": 3,
+        "included": {
+          "operations": 1000000
+        }
+      },
+      "workers": {
+        "source": "https://developers.cloudflare.com/workers/platform/pricing/ (last updated 2026-10-02)",
+        "requestsPerMillion": 0.3,
+        "baseMonthly": 5,
+        "included": {
+          "requests": 10000000
+        }
+      }
+    }
+  },
+  "assumptions": [
+    "Poisson arrivals at a constant rate (events / 30 days); real traffic is burstier, which means fewer, larger publications for the same total",
+    "publications: month / (1/rate + interval), each of 1 + rate*interval entries (capped at 500)",
+    "queue batches close 5 s after their first message or at 100 messages",
+    "per-publication and per-batch counts interpolated linearly between measured sizes",
+    "every partial tile and partial bundle is kept (DECISIONS D4.5), so R2 storage grows by the bytes written per publication",
+    "excluded: DO duration, Workers CPU, Workflow steps (auditor), verifier reads, R2 Class B by clients"
+  ],
+  "scenarios": [
+    {
+      "eventsPerMonth": 1000000,
+      "checkpointIntervalMs": 1000,
+      "model": {
+        "eventsPerSecond": 0.3858,
+        "entriesPerPublication": 1.39,
+        "publications": 721604,
+        "messagesPerQueueBatch": 2.93,
+        "queueBatches": 341412
+      },
+      "usage": {
+        "r2ClassA": 2890314.254,
+        "r2ClassB": 0,
+        "r2GBAddedPerMonth": 27.649,
+        "doRequests": 1063015.576,
+        "doRowsWritten": 22338232.513,
+        "doRowsRead": 112262555.921,
+        "queueOperations": 3000000,
+        "workerInvocations": 341412.013
+      },
+      "listPriceUSD": {
+        "r2ClassA": 13.01,
+        "r2StorageAddedThisMonth": 0.41,
+        "doRequests": 0.16,
+        "doRowsWritten": 22.34,
+        "doRowsRead": 0.11,
+        "queues": 1.2,
+        "workerRequests": 0.1,
+        "total": 37.33
+      },
+      "paidPlanUSD": {
+        "base": 5,
+        "r2ClassA": 8.51,
+        "doRequests": 0.01,
+        "doRowsWritten": 0,
+        "queues": 0.8,
+        "workerRequests": 0,
+        "total": 14.32
+      }
+    },
+    {
+      "eventsPerMonth": 1000000,
+      "checkpointIntervalMs": 5000,
+      "model": {
+        "eventsPerSecond": 0.3858,
+        "entriesPerPublication": 2.93,
+        "publications": 341412,
+        "messagesPerQueueBatch": 2.93,
+        "queueBatches": 341412
+      },
+      "usage": {
+        "r2ClassA": 1372857.253,
+        "r2ClassB": 0,
+        "r2GBAddedPerMonth": 13.222,
+        "doRequests": 682824.025,
+        "doRowsWritten": 17091261.363,
+        "doRowsRead": 55902808.5,
+        "queueOperations": 3000000,
+        "workerInvocations": 341412.013
+      },
+      "listPriceUSD": {
+        "r2ClassA": 6.18,
+        "r2StorageAddedThisMonth": 0.2,
+        "doRequests": 0.1,
+        "doRowsWritten": 17.09,
+        "doRowsRead": 0.06,
+        "queues": 1.2,
+        "workerRequests": 0.1,
+        "total": 24.93
+      },
+      "paidPlanUSD": {
+        "base": 5,
+        "r2ClassA": 1.68,
+        "doRequests": 0,
+        "doRowsWritten": 0,
+        "queues": 0.8,
+        "workerRequests": 0,
+        "total": 7.48
+      }
+    },
+    {
+      "eventsPerMonth": 1000000,
+      "checkpointIntervalMs": 15000,
+      "model": {
+        "eventsPerSecond": 0.3858,
+        "entriesPerPublication": 6.79,
+        "publications": 147340,
+        "messagesPerQueueBatch": 2.93,
+        "queueBatches": 341412
+      },
+      "usage": {
+        "r2ClassA": 599518.799,
+        "r2ClassB": 0,
+        "r2GBAddedPerMonth": 5.882,
+        "doRequests": 488751.713,
+        "doRowsWritten": 14412934.442,
+        "doRowsRead": 27214744.103,
+        "queueOperations": 3000000,
+        "workerInvocations": 341412.013
+      },
+      "listPriceUSD": {
+        "r2ClassA": 2.7,
+        "r2StorageAddedThisMonth": 0.09,
+        "doRequests": 0.07,
+        "doRowsWritten": 14.41,
+        "doRowsRead": 0.03,
+        "queues": 1.2,
+        "workerRequests": 0.1,
+        "total": 18.6
+      },
+      "paidPlanUSD": {
+        "base": 5,
+        "r2ClassA": 0,
+        "doRequests": 0,
+        "doRowsWritten": 0,
+        "queues": 0.8,
+        "workerRequests": 0,
+        "total": 5.8
+      }
+    },
+    {
+      "eventsPerMonth": 10000000,
+      "checkpointIntervalMs": 1000,
+      "model": {
+        "eventsPerSecond": 3.858,
+        "entriesPerPublication": 4.86,
+        "publications": 2058450,
+        "messagesPerQueueBatch": 20.29,
+        "queueBatches": 492851
+      },
+      "usage": {
+        "r2ClassA": 8334179.585,
+        "r2ClassB": 0,
+        "r2GBAddedPerMonth": 81.094,
+        "doRequests": 2551300.433,
+        "doRowsWritten": 140516427.04,
+        "doRowsRead": 338674346.26,
+        "queueOperations": 30000000,
+        "workerInvocations": 492850.624
+      },
+      "listPriceUSD": {
+        "r2ClassA": 37.5,
+        "r2StorageAddedThisMonth": 1.22,
+        "doRequests": 0.38,
+        "doRowsWritten": 140.52,
+        "doRowsRead": 0.34,
+        "queues": 12,
+        "workerRequests": 0.15,
+        "total": 192.11
+      },
+      "paidPlanUSD": {
+        "base": 5,
+        "r2ClassA": 33,
+        "doRequests": 0.23,
+        "doRowsWritten": 90.52,
+        "queues": 11.6,
+        "workerRequests": 0,
+        "total": 140.35
+      }
+    },
+    {
+      "eventsPerMonth": 10000000,
+      "checkpointIntervalMs": 5000,
+      "model": {
+        "eventsPerSecond": 3.858,
+        "entriesPerPublication": 20.29,
+        "publications": 492851,
+        "messagesPerQueueBatch": 20.29,
+        "queueBatches": 492851
+      },
+      "usage": {
+        "r2ClassA": 2073282.081,
+        "r2ClassB": 0,
+        "r2GBAddedPerMonth": 21.46,
+        "doRequests": 985701.247,
+        "doRowsWritten": 118911911.419,
+        "doRowsRead": 105816194.331,
+        "queueOperations": 30000000,
+        "workerInvocations": 492850.624
+      },
+      "listPriceUSD": {
+        "r2ClassA": 9.33,
+        "r2StorageAddedThisMonth": 0.32,
+        "doRequests": 0.15,
+        "doRowsWritten": 118.91,
+        "doRowsRead": 0.11,
+        "queues": 12,
+        "workerRequests": 0.15,
+        "total": 140.97
+      },
+      "paidPlanUSD": {
+        "base": 5,
+        "r2ClassA": 4.83,
+        "doRequests": 0,
+        "doRowsWritten": 68.91,
+        "queues": 11.6,
+        "workerRequests": 0,
+        "total": 90.34
+      }
+    },
+    {
+      "eventsPerMonth": 10000000,
+      "checkpointIntervalMs": 15000,
+      "model": {
+        "eventsPerSecond": 3.858,
+        "entriesPerPublication": 58.87,
+        "publications": 169865,
+        "messagesPerQueueBatch": 20.29,
+        "queueBatches": 492851
+      },
+      "usage": {
+        "r2ClassA": 794838.949,
+        "r2ClassB": 0,
+        "r2GBAddedPerMonth": 9.433,
+        "doRequests": 662715.361,
+        "doRowsWritten": 114300960.416,
+        "doRowsRead": 58562062.179,
+        "queueOperations": 30000000,
+        "workerInvocations": 492850.624
+      },
+      "listPriceUSD": {
+        "r2ClassA": 3.58,
+        "r2StorageAddedThisMonth": 0.14,
+        "doRequests": 0.1,
+        "doRowsWritten": 114.3,
+        "doRowsRead": 0.06,
+        "queues": 12,
+        "workerRequests": 0.15,
+        "total": 130.33
+      },
+      "paidPlanUSD": {
+        "base": 5,
+        "r2ClassA": 0,
+        "doRequests": 0,
+        "doRowsWritten": 64.3,
+        "queues": 11.6,
+        "workerRequests": 0,
+        "total": 80.9
+      }
+    },
+    {
+      "eventsPerMonth": 100000000,
+      "checkpointIntervalMs": 1000,
+      "model": {
+        "eventsPerSecond": 38.5802,
+        "entriesPerPublication": 39.58,
+        "publications": 2526513,
+        "messagesPerQueueBatch": 100,
+        "queueBatches": 1000000
+      },
+      "usage": {
+        "r2ClassA": 11235578.915,
+        "r2ClassB": 0,
+        "r2GBAddedPerMonth": 125.395,
+        "doRequests": 3526512.789,
+        "doRowsWritten": 1138177262.986,
+        "doRowsRead": 679590995.363,
+        "queueOperations": 300000000,
+        "workerInvocations": 1000000
+      },
+      "listPriceUSD": {
+        "r2ClassA": 50.56,
+        "r2StorageAddedThisMonth": 1.88,
+        "doRequests": 0.53,
+        "doRowsWritten": 1138.18,
+        "doRowsRead": 0.68,
+        "queues": 120,
+        "workerRequests": 0.3,
+        "total": 1312.13
+      },
+      "paidPlanUSD": {
+        "base": 5,
+        "r2ClassA": 46.06,
+        "doRequests": 0.38,
+        "doRowsWritten": 1088.18,
+        "queues": 119.6,
+        "workerRequests": 0,
+        "total": 1259.22
+      }
+    },
+    {
+      "eventsPerMonth": 100000000,
+      "checkpointIntervalMs": 5000,
+      "model": {
+        "eventsPerSecond": 38.5802,
+        "entriesPerPublication": 193.9,
+        "publications": 515726,
+        "messagesPerQueueBatch": 100,
+        "queueBatches": 1000000
+      },
+      "usage": {
+        "r2ClassA": 3216754.323,
+        "r2ClassB": 0,
+        "r2GBAddedPerMonth": 47.73,
+        "doRequests": 1515726.474,
+        "doRowsWritten": 1110158751.904,
+        "doRowsRead": 376633809.359,
+        "queueOperations": 300000000,
+        "workerInvocations": 1000000
+      },
+      "listPriceUSD": {
+        "r2ClassA": 14.48,
+        "r2StorageAddedThisMonth": 0.72,
+        "doRequests": 0.23,
+        "doRowsWritten": 1110.16,
+        "doRowsRead": 0.38,
+        "queues": 120,
+        "workerRequests": 0.3,
+        "total": 1246.27
+      },
+      "paidPlanUSD": {
+        "base": 5,
+        "r2ClassA": 9.98,
+        "doRequests": 0.08,
+        "doRowsWritten": 1060.16,
+        "queues": 119.6,
+        "workerRequests": 0,
+        "total": 1194.82
+      }
+    },
+    {
+      "eventsPerMonth": 100000000,
+      "checkpointIntervalMs": 15000,
+      "model": {
+        "eventsPerSecond": 38.5802,
+        "entriesPerPublication": 500,
+        "publications": 200000,
+        "messagesPerQueueBatch": 100,
+        "queueBatches": 1000000
+      },
+      "usage": {
+        "r2ClassA": 1733340,
+        "r2ClassB": 0,
+        "r2GBAddedPerMonth": 40.536,
+        "doRequests": 1200000,
+        "doRowsWritten": 1101233300,
+        "doRowsRead": 341566640,
+        "queueOperations": 300000000,
+        "workerInvocations": 1000000
+      },
+      "listPriceUSD": {
+        "r2ClassA": 7.8,
+        "r2StorageAddedThisMonth": 0.61,
+        "doRequests": 0.18,
+        "doRowsWritten": 1101.23,
+        "doRowsRead": 0.34,
+        "queues": 120,
+        "workerRequests": 0.3,
+        "total": 1230.46
+      },
+      "paidPlanUSD": {
+        "base": 5,
+        "r2ClassA": 3.3,
+        "doRequests": 0.03,
+        "doRowsWritten": 1051.23,
+        "queues": 119.6,
+        "workerRequests": 0,
+        "total": 1179.16
+      }
+    }
+  ]
+}

@@ -1,0 +1,151 @@
+{
+  "benchmark": "PLAN §14.5 core hashing speed",
+  "environment": {
+    "date": "2026-10-03T07:25:22.389Z",
+    "commit": "f35a560",
+    "dirty": true,
+    "os": "linux 7.2.5-4-omarchy",
+    "cpu": "AMD Ryzen 5 3600 6-Core Processor",
+    "cpus": 12,
+    "memoryGiB": 16,
+    "node": "v26.10.0",
+    "go": "go1.27.1-X:nodwarf5",
+    "wrangler": "4.147.0",
+    "workerd": "1.20261001.1",
+    "runtime": "Node.js (packages/core directly; not workerd)"
+  },
+  "config": {
+    "leaves": 65536,
+    "runs": 15,
+    "warmup": 2,
+    "meanEntryBytes": 253.7
+  },
+  "tree": [
+    {
+      "strategy": "sequential",
+      "ms": {
+        "n": 15,
+        "min": 2334.485,
+        "median": 2538.523,
+        "p95": 2681.408,
+        "p99": 2681.408,
+        "max": 2681.408,
+        "mean": 2533.321
+      },
+      "leavesPerSecondAtMedian": 25817,
+      "hashesPerTree": 131071
+    },
+    {
+      "strategy": "perLevel",
+      "ms": {
+        "n": 15,
+        "min": 954.502,
+        "median": 1086.059,
+        "p95": 1295.174,
+        "p99": 1295.174,
+        "max": 1295.174,
+        "mean": 1081.554
+      },
+      "leavesPerSecondAtMedian": 60343,
+      "hashesPerTree": 131071
+    },
+    {
+      "strategy": "chunked",
+      "ms": {
+        "n": 15,
+        "min": 828.639,
+        "median": 941.716,
+        "p95": 1073.143,
+        "p99": 1073.143,
+        "max": 1073.143,
+        "mean": 927.536
+      },
+      "leavesPerSecondAtMedian": 69592,
+      "hashesPerTree": 131071
+    },
+    {
+      "strategy": "nodeSync",
+      "ms": {
+        "n": 15,
+        "min": 573.667,
+        "median": 682.944,
+        "p95": 1094.604,
+        "p99": 1094.604,
+        "max": 1094.604,
+        "mean": 729.983
+      },
+      "leavesPerSecondAtMedian": 95961,
+      "hashesPerTree": 131071
+    }
+  ],
+  "publicationCompute": {
+    "description": "appendEntries (leaf hashes, tiles, bundles, root) + Ed25519 checkpoint signature, from a 1,000-entry log",
+    "results": [
+      {
+        "entries": 1,
+        "ms": {
+          "n": 15,
+          "min": 2.023,
+          "median": 2.154,
+          "p95": 2.357,
+          "p99": 2.357,
+          "max": 2.357,
+          "mean": 2.185
+        },
+        "entriesPerSecondAtMedian": 464
+      },
+      {
+        "entries": 10,
+        "ms": {
+          "n": 15,
+          "min": 2.29,
+          "median": 3.798,
+          "p95": 202.221,
+          "p99": 202.221,
+          "max": 202.221,
+          "mean": 17.486
+        },
+        "entriesPerSecondAtMedian": 2633
+      },
+      {
+        "entries": 100,
+        "ms": {
+          "n": 15,
+          "min": 2.99,
+          "median": 3.091,
+          "p95": 6.096,
+          "p99": 6.096,
+          "max": 6.096,
+          "mean": 3.439
+        },
+        "entriesPerSecondAtMedian": 32352
+      },
+      {
+        "entries": 500,
+        "ms": {
+          "n": 15,
+          "min": 6.874,
+          "median": 8.001,
+          "p95": 14.162,
+          "p99": 14.162,
+          "max": 14.162,
+          "mean": 8.545
+        },
+        "entriesPerSecondAtMedian": 62492
+      },
+      {
+        "entries": 1000,
+        "ms": {
+          "n": 15,
+          "min": 12.615,
+          "median": 14.221,
+          "p95": 18.856,
+          "p99": 18.856,
+          "max": 18.856,
+          "mean": 14.823
+        },
+        "entriesPerSecondAtMedian": 70319
+      }
+    ]
+  }
+}

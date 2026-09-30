@@ -60,7 +60,7 @@ export function scanView(s: ScanSummary | null): Record<string, unknown> | null 
   };
 }
 
-/** GET /api/v1/status: operational counters and the latest audit. */
+/** GET /api/v1/status: operational counters, the latest audit and the latest backfill. */
 export async function status(deps: ApiDeps, head: boolean): Promise<Response> {
   const s = await deps.sequencer.status();
   return json(
@@ -82,6 +82,7 @@ export async function status(deps: ApiDeps, head: boolean): Promise<Response> {
             : { at: iso(s.ingest.lastInvalid.at), reason: s.ingest.lastInvalid.reason },
       },
       audit: scanView(s.audit),
+      backfill: scanView(s.backfill),
     },
     head,
   );

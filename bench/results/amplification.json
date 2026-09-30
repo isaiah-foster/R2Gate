@@ -1,0 +1,612 @@
+{
+  "benchmark": "PLAN §14.3 R2 and Durable Object operation amplification",
+  "environment": {
+    "date": "2026-10-03T07:23:06.895Z",
+    "commit": "f35a560",
+    "dirty": true,
+    "os": "linux 7.2.5-4-omarchy",
+    "cpu": "AMD Ryzen 5 3600 6-Core Processor",
+    "cpus": 12,
+    "memoryGiB": 16,
+    "node": "v26.10.0",
+    "go": "go1.27.1-X:nodwarf5",
+    "wrangler": "4.147.0",
+    "workerd": "1.20261001.1",
+    "runtime": "workerd via @cloudflare/vitest-plugin (local DO SQLite and local R2); counts, not timings"
+  },
+  "config": {
+    "checkpointIntervalMs": "n/a (each publication is triggered by running the alarm)",
+    "batchMaxEntries": 500,
+    "queueMaxBatchSize": 100,
+    "messages": "PutObject notifications for new keys data/2026/10/03/object-<7 digits>.bin",
+    "classes": "R2 pricing page (2026-10-01): put, list = Class A; get, head = Class B; delete free",
+    "rows": "sum of SqlStorageCursor rowsRead/rowsWritten; setAlarm counted separately (billed as one row written)"
+  },
+  "results": [
+    {
+      "entriesPerPublication": 1,
+      "messagesPerQueueBatch": 1,
+      "entries": 2560,
+      "publications": 2560,
+      "queueBatches": 2560,
+      "ingest": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 20492,
+        "rowsWritten": 17957,
+        "setAlarm": 2560
+      },
+      "publish": {
+        "classA": 10250,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 98508346,
+        "r2BytesRetained": 97941133,
+        "rowsRead": 384751,
+        "rowsWritten": 50688,
+        "setAlarm": 0
+      },
+      "prune": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2571,
+        "rowsWritten": 2560,
+        "setAlarm": 0
+      },
+      "perEntry": {
+        "classA": 4.0039,
+        "classB": 0,
+        "r2BytesWritten": 38479.8227,
+        "r2BytesRetained": 38258.2551,
+        "rowsRead": 159.3023,
+        "rowsWrittenBilled": 28.8145
+      },
+      "perPublication": {
+        "classA": 4.0039,
+        "classB": 0,
+        "rowsRead": 150.2934,
+        "rowsWritten": 19.8,
+        "setAlarm": 0,
+        "r2BytesRetained": 38258.2551
+      },
+      "perQueueBatch": {
+        "rowsRead": 8.0047,
+        "rowsWritten": 7.0145,
+        "setAlarm": 1
+      },
+      "perEntryPrune": {
+        "rowsWritten": 1
+      },
+      "sqliteBytes": {
+        "beforePrune": 888832,
+        "afterPrune": 888832
+      }
+    },
+    {
+      "entriesPerPublication": 2,
+      "messagesPerQueueBatch": 2,
+      "entries": 2560,
+      "publications": 1280,
+      "queueBatches": 1280,
+      "ingest": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 11532,
+        "rowsWritten": 14117,
+        "setAlarm": 1280
+      },
+      "publish": {
+        "classA": 5130,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 49444496,
+        "r2BytesRetained": 49160888,
+        "rowsRead": 194287,
+        "rowsWritten": 33024,
+        "setAlarm": 0
+      },
+      "prune": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2571,
+        "rowsWritten": 2560,
+        "setAlarm": 0
+      },
+      "perEntry": {
+        "classA": 2.0039,
+        "classB": 0,
+        "r2BytesWritten": 19314.2562,
+        "r2BytesRetained": 19203.4719,
+        "rowsRead": 81.4023,
+        "rowsWrittenBilled": 19.9145
+      },
+      "perPublication": {
+        "classA": 4.0078,
+        "classB": 0,
+        "rowsRead": 151.7867,
+        "rowsWritten": 25.8,
+        "setAlarm": 0,
+        "r2BytesRetained": 38406.9437
+      },
+      "perQueueBatch": {
+        "rowsRead": 9.0094,
+        "rowsWritten": 11.0289,
+        "setAlarm": 1
+      },
+      "perEntryPrune": {
+        "rowsWritten": 1
+      },
+      "sqliteBytes": {
+        "beforePrune": 888832,
+        "afterPrune": 888832
+      }
+    },
+    {
+      "entriesPerPublication": 5,
+      "messagesPerQueueBatch": 5,
+      "entries": 2560,
+      "publications": 512,
+      "queueBatches": 512,
+      "ingest": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 6156,
+        "rowsWritten": 11813,
+        "setAlarm": 512
+      },
+      "publish": {
+        "classA": 2074,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 20309290,
+        "r2BytesRetained": 20195845,
+        "rowsRead": 81039,
+        "rowsWritten": 22424,
+        "setAlarm": 0
+      },
+      "prune": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2571,
+        "rowsWritten": 2560,
+        "setAlarm": 0
+      },
+      "perEntry": {
+        "classA": 0.8102,
+        "classB": 0,
+        "r2BytesWritten": 7933.3164,
+        "r2BytesRetained": 7889.002,
+        "rowsRead": 35.0648,
+        "rowsWrittenBilled": 14.5738
+      },
+      "perPublication": {
+        "classA": 4.0508,
+        "classB": 0,
+        "rowsRead": 158.2793,
+        "rowsWritten": 43.7969,
+        "setAlarm": 0,
+        "r2BytesRetained": 39445.0098
+      },
+      "perQueueBatch": {
+        "rowsRead": 12.0234,
+        "rowsWritten": 23.0723,
+        "setAlarm": 1
+      },
+      "perEntryPrune": {
+        "rowsWritten": 1
+      },
+      "sqliteBytes": {
+        "beforePrune": 888832,
+        "afterPrune": 888832
+      }
+    },
+    {
+      "entriesPerPublication": 10,
+      "messagesPerQueueBatch": 10,
+      "entries": 2560,
+      "publications": 256,
+      "queueBatches": 256,
+      "ingest": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 4364,
+        "rowsWritten": 11045,
+        "setAlarm": 256
+      },
+      "publish": {
+        "classA": 1050,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 10496520,
+        "r2BytesRetained": 10439796,
+        "rowsRead": 42947,
+        "rowsWritten": 18892,
+        "setAlarm": 0
+      },
+      "prune": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2571,
+        "rowsWritten": 2560,
+        "setAlarm": 0
+      },
+      "perEntry": {
+        "classA": 0.4102,
+        "classB": 0,
+        "r2BytesWritten": 4100.2031,
+        "r2BytesRetained": 4078.0453,
+        "rowsRead": 19.4852,
+        "rowsWrittenBilled": 12.7941
+      },
+      "perPublication": {
+        "classA": 4.1016,
+        "classB": 0,
+        "rowsRead": 167.7617,
+        "rowsWritten": 73.7969,
+        "setAlarm": 0,
+        "r2BytesRetained": 40780.4531
+      },
+      "perQueueBatch": {
+        "rowsRead": 17.0469,
+        "rowsWritten": 43.1445,
+        "setAlarm": 1
+      },
+      "perEntryPrune": {
+        "rowsWritten": 1
+      },
+      "sqliteBytes": {
+        "beforePrune": 888832,
+        "afterPrune": 888832
+      }
+    },
+    {
+      "entriesPerPublication": 20,
+      "messagesPerQueueBatch": 20,
+      "entries": 2560,
+      "publications": 128,
+      "queueBatches": 128,
+      "ingest": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 3468,
+        "rowsWritten": 10661,
+        "setAlarm": 128
+      },
+      "publish": {
+        "classA": 538,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 5590134,
+        "r2BytesRetained": 5561771,
+        "rowsRead": 23901,
+        "rowsWritten": 17126,
+        "setAlarm": 0
+      },
+      "prune": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2571,
+        "rowsWritten": 2560,
+        "setAlarm": 0
+      },
+      "perEntry": {
+        "classA": 0.2102,
+        "classB": 0,
+        "r2BytesWritten": 2183.6461,
+        "r2BytesRetained": 2172.5668,
+        "rowsRead": 11.6953,
+        "rowsWrittenBilled": 11.9043
+      },
+      "perPublication": {
+        "classA": 4.2031,
+        "classB": 0,
+        "rowsRead": 186.7266,
+        "rowsWritten": 133.7969,
+        "setAlarm": 0,
+        "r2BytesRetained": 43451.3359
+      },
+      "perQueueBatch": {
+        "rowsRead": 27.0938,
+        "rowsWritten": 83.2891,
+        "setAlarm": 1
+      },
+      "perEntryPrune": {
+        "rowsWritten": 1
+      },
+      "sqliteBytes": {
+        "beforePrune": 888832,
+        "afterPrune": 888832
+      }
+    },
+    {
+      "entriesPerPublication": 50,
+      "messagesPerQueueBatch": 50,
+      "entries": 2600,
+      "publications": 52,
+      "queueBatches": 52,
+      "ingest": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2976,
+        "rowsWritten": 10593,
+        "setAlarm": 52
+      },
+      "publish": {
+        "classA": 238,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 2763400,
+        "r2BytesRetained": 2751876,
+        "rowsRead": 12885,
+        "rowsWritten": 16276,
+        "setAlarm": 0
+      },
+      "prune": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2611,
+        "rowsWritten": 2600,
+        "setAlarm": 0
+      },
+      "perEntry": {
+        "classA": 0.0915,
+        "classB": 0,
+        "r2BytesWritten": 1062.8462,
+        "r2BytesRetained": 1058.4138,
+        "rowsRead": 7.1046,
+        "rowsWrittenBilled": 11.3542
+      },
+      "perPublication": {
+        "classA": 4.5769,
+        "classB": 0,
+        "rowsRead": 247.7885,
+        "rowsWritten": 313,
+        "setAlarm": 0,
+        "r2BytesRetained": 52920.6923
+      },
+      "perQueueBatch": {
+        "rowsRead": 57.2308,
+        "rowsWritten": 203.7115,
+        "setAlarm": 1
+      },
+      "perEntryPrune": {
+        "rowsWritten": 1
+      },
+      "sqliteBytes": {
+        "beforePrune": 917504,
+        "afterPrune": 917504
+      }
+    },
+    {
+      "entriesPerPublication": 100,
+      "messagesPerQueueBatch": 100,
+      "entries": 2600,
+      "publications": 26,
+      "queueBatches": 26,
+      "ingest": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2794,
+        "rowsWritten": 10515,
+        "setAlarm": 26
+      },
+      "publish": {
+        "classA": 134,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 1764422,
+        "r2BytesRetained": 1758659,
+        "rowsRead": 9009,
+        "rowsWritten": 15918,
+        "setAlarm": 0
+      },
+      "prune": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2611,
+        "rowsWritten": 2600,
+        "setAlarm": 0
+      },
+      "perEntry": {
+        "classA": 0.0515,
+        "classB": 0,
+        "r2BytesWritten": 678.6238,
+        "r2BytesRetained": 676.4073,
+        "rowsRead": 5.5438,
+        "rowsWrittenBilled": 11.1765
+      },
+      "perPublication": {
+        "classA": 5.1538,
+        "classB": 0,
+        "rowsRead": 346.5,
+        "rowsWritten": 612.2308,
+        "setAlarm": 0,
+        "r2BytesRetained": 67640.7308
+      },
+      "perQueueBatch": {
+        "rowsRead": 107.4615,
+        "rowsWritten": 404.4231,
+        "setAlarm": 1
+      },
+      "perEntryPrune": {
+        "rowsWritten": 1
+      },
+      "sqliteBytes": {
+        "beforePrune": 917504,
+        "afterPrune": 917504
+      }
+    },
+    {
+      "entriesPerPublication": 200,
+      "messagesPerQueueBatch": 100,
+      "entries": 2600,
+      "publications": 13,
+      "queueBatches": 26,
+      "ingest": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2792,
+        "rowsWritten": 10515,
+        "setAlarm": 13
+      },
+      "publish": {
+        "classA": 82,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 1227044,
+        "r2BytesRetained": 1224162,
+        "rowsRead": 6942,
+        "rowsWritten": 15738,
+        "setAlarm": 0
+      },
+      "prune": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 2611,
+        "rowsWritten": 2600,
+        "setAlarm": 0
+      },
+      "perEntry": {
+        "classA": 0.0315,
+        "classB": 0,
+        "r2BytesWritten": 471.94,
+        "r2BytesRetained": 470.8315,
+        "rowsRead": 4.7481,
+        "rowsWrittenBilled": 11.1023
+      },
+      "perPublication": {
+        "classA": 6.3077,
+        "classB": 0,
+        "rowsRead": 534,
+        "rowsWritten": 1210.6154,
+        "setAlarm": 0,
+        "r2BytesRetained": 94166.3077
+      },
+      "perQueueBatch": {
+        "rowsRead": 107.3846,
+        "rowsWritten": 404.4231,
+        "setAlarm": 0.5
+      },
+      "perEntryPrune": {
+        "rowsWritten": 1
+      },
+      "sqliteBytes": {
+        "beforePrune": 917504,
+        "afterPrune": 917504
+      }
+    },
+    {
+      "entriesPerPublication": 500,
+      "messagesPerQueueBatch": 100,
+      "entries": 3000,
+      "publications": 6,
+      "queueBatches": 30,
+      "ingest": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 3214,
+        "rowsWritten": 12127,
+        "setAlarm": 12
+      },
+      "publish": {
+        "classA": 52,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 1217414,
+        "r2BytesRetained": 1216083,
+        "rowsRead": 7033,
+        "rowsWritten": 17898,
+        "setAlarm": 0
+      },
+      "prune": {
+        "classA": 0,
+        "classB": 0,
+        "r2Deletes": 0,
+        "r2BytesWritten": 0,
+        "r2BytesRetained": 0,
+        "rowsRead": 3011,
+        "rowsWritten": 3000,
+        "setAlarm": 0
+      },
+      "perEntry": {
+        "classA": 0.0173,
+        "classB": 0,
+        "r2BytesWritten": 405.8047,
+        "r2BytesRetained": 405.361,
+        "rowsRead": 4.4193,
+        "rowsWrittenBilled": 11.0123
+      },
+      "perPublication": {
+        "classA": 8.6667,
+        "classB": 0,
+        "rowsRead": 1172.1667,
+        "rowsWritten": 2983,
+        "setAlarm": 0,
+        "r2BytesRetained": 202680.5
+      },
+      "perQueueBatch": {
+        "rowsRead": 107.1333,
+        "rowsWritten": 404.2333,
+        "setAlarm": 0.4
+      },
+      "perEntryPrune": {
+        "rowsWritten": 1
+      },
+      "sqliteBytes": {
+        "beforePrune": 1089536,
+        "afterPrune": 1089536
+      }
+    }
+  ]
+}

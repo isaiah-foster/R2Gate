@@ -24,12 +24,11 @@
 //      With one bit flipped in any tile, bundle or archived checkpoint, or a forged signature,
 //      the replay must stop with exit code 1 (verification failed); a missing resource with 4.
 
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
-import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   CHECKPOINT_PATH,
@@ -47,6 +46,7 @@ import {
   toBase64,
   utf8Decode,
 } from '../packages/core/src/index.ts';
+import { ROOT, randomToken as token, sleep, startDev, type DevServer } from './lib/dev.ts';
 import { simulate } from './simulate/events.ts';
 
 const { values } = parseArgs({
@@ -60,31 +60,11 @@ if (values.help) {
   process.exit(0);
 }
 
-const ROOT = resolve(import.meta.dirname, '..');
 const LOG_NAME = 'example-log'; // worker/wrangler.jsonc
 const ORIGIN = 'r2notary.example.com/log/example-log';
 const BUCKET = 'example-monitored-bucket';
 /** Published sizes: around the 256 boundary of level-0 tiles and bundles, and of level-1 widths. */
 const SIZES = [1, 255, 256, 257, 512, 513, 1000, 1300];
-/** Keys the config reads from the environment; stripped from the child's environment. */
-const CONFIG_KEYS = [
-  'SIGNING_KEY',
-  'ADMIN_TOKEN',
-  'READ_TOKEN',
-  'LOG_NAME',
-  'LOG_ORIGIN',
-  'MONITORED_BUCKET_NAME',
-  'LOG_BUCKET_NAME',
-  'CHECKPOINT_INTERVAL_MS',
-  'BATCH_MAX_ENTRIES',
-  'DEDUPE_TTL_SECONDS',
-  'EVENTS_DLQ_NAME',
-  'AUDIT_GRACE_SECONDS',
-  'DEEP_SCRUB_SAMPLE_RATE',
-  'DEEP_SCRUB_MAX_BYTES',
-  'PUBLIC_LOG',
-];
-
 // Exit codes of the Go CLI (cli/cmd/r2notary/main.go).
 const EXIT = { ok: 0, failure: 1, negative: 3, error: 4 } as const;
 
@@ -132,28 +112,6 @@ function run(
     });
   });
 }
-
-async function freePort(): Promise<number> {
-  return new Promise((done, fail) => {
-    const srv = createNetServer();
-    srv.on('error', fail);
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-      srv.close(() => {
-        done(port);
-      });
-    });
-  });
-}
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((done) => {
-    setTimeout(done, ms);
-  });
-
-const token = (): string =>
-  Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
 
 /** Every resource of a tree of the given size: tiles and bundles at each level, and its archive. */
 function resourcesAt(size: number): string[] {
@@ -203,19 +161,13 @@ function printedEntries(stdout: string): Map<number, string> {
   return out;
 }
 
-let wrangler: ChildProcess | null = null;
+let dev = null as DevServer | null;
 // Typed through `as` so TypeScript does not narrow it to null for the finally block below.
 let mirrorServer = null as Server | null;
 
 function stopWrangler(): void {
-  if (wrangler?.pid !== undefined && wrangler.exitCode === null) {
-    try {
-      process.kill(-wrangler.pid, 'SIGTERM'); // the whole process group: wrangler and workerd
-    } catch {
-      // already gone
-    }
-  }
-  wrangler = null;
+  dev?.stop();
+  dev = null;
 }
 
 async function main(): Promise<void> {
@@ -234,53 +186,21 @@ async function main(): Promise<void> {
 
   // 2. The Worker under wrangler dev. CHECKPOINT_INTERVAL_MS is an hour, so only the admin API
   // publishes and every checkpoint size is known.
-  const envFile = join(tmp, 'conformance.env');
-  writeFileSync(
-    envFile,
-    [
-      `SIGNING_KEY=${skey}`,
-      `ADMIN_TOKEN=${adminToken}`,
-      `READ_TOKEN=${readToken}`,
-      'CHECKPOINT_INTERVAL_MS=3600000',
-      'BATCH_MAX_ENTRIES=1000',
+  step('starting wrangler dev');
+  dev = await startDev({
+    dir: tmp,
+    readToken,
+    vars: {
+      SIGNING_KEY: skey,
+      ADMIN_TOKEN: adminToken,
+      READ_TOKEN: readToken,
+      CHECKPOINT_INTERVAL_MS: '3600000',
+      BATCH_MAX_ENTRIES: '1000',
       // The simulated events are hours old, but the scan runs immediately after publication.
-      'AUDIT_GRACE_SECONDS=0',
-      '',
-    ].join('\n'),
-    { mode: 0o600 },
-  );
-  const port = await freePort();
-  const inspectorPort = await freePort();
-  // Since the config declares secrets, wrangler also merges the process environment into them
-  // (DECISIONS D5.7): drop anything that could override the env file.
-  const childEnv: NodeJS.ProcessEnv = {
-    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !CONFIG_KEYS.includes(k))),
-    WRANGLER_SEND_METRICS: 'false',
-  };
-  const logFd = openSync(join(tmp, 'wrangler.log'), 'w');
-  wrangler = spawn(
-    join(ROOT, 'node_modules/.bin/wrangler'),
-    [
-      'dev',
-      '-c',
-      'worker/dev/wrangler.simulator.jsonc',
-      '-c',
-      'worker/wrangler.jsonc',
-      '--ip',
-      '127.0.0.1',
-      '--port',
-      String(port),
-      '--inspector-port',
-      String(inspectorPort),
-      '--persist-to',
-      join(tmp, 'state'),
-      '--env-file',
-      envFile,
-      '--show-interactive-dev-session=false',
-    ],
-    { cwd: ROOT, env: childEnv, stdio: ['ignore', logFd, logFd], detached: true },
-  );
-  const base = `http://127.0.0.1:${String(port)}`;
+      AUDIT_GRACE_SECONDS: '0',
+    },
+  });
+  const base = dev.base;
   const logUrl = `${base}/log/${LOG_NAME}`;
   const auth = (t: string): Record<string, string> => ({ authorization: `Bearer ${t}` });
 
@@ -292,16 +212,6 @@ async function main(): Promise<void> {
       return null;
     }
   };
-  step(`starting wrangler dev on ${base}`);
-  for (let i = 0; ; i++) {
-    if ((await status()) !== null) break;
-    if (wrangler.exitCode !== null || i > 240) {
-      throw new Error(
-        `wrangler dev did not start:\n${readFileSync(join(tmp, 'wrangler.log'), 'utf8')}`,
-      );
-    }
-    await sleep(500);
-  }
 
   const { messages, manifest } = simulate({
     count: SIZES.at(-1) ?? 0,

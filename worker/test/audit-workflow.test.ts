@@ -134,9 +134,16 @@ describe('starting scans', () => {
     await using wf = await introspectWorkflow(env.SCAN_WORKFLOW);
     const res = await call('/api/v1/admin/backfill', 'POST');
     expect(res.status).toBe(202);
+    const { scanId } = await res.json<{ scanId: string }>();
     const [instance] = await wf.get();
     await instance?.waitForStatus('complete');
     expect(await instance?.getOutput()).toMatchObject({ status: 'done', findings: 0 });
+    // /status shows the latest backfill apart from the latest audit (M7).
+    const status = await (
+      await call('/api/v1/status', 'GET', env.READ_TOKEN)
+    ).json<{ audit: unknown; backfill: { scanId: string; state: string; mode: string } }>();
+    expect(status.backfill).toMatchObject({ scanId, state: 'done', mode: 'backfill' });
+    expect(status.audit).toBeNull();
   });
 
   it('the cron trigger starts one audit per scheduled time', async () => {

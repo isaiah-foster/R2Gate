@@ -1102,3 +1102,162 @@ the grace window, `now` the observation time, and `quiet(t)` meaning `t <= now -
 - **Measurements:** auditor objects/s, deep-scrub MB/s, CPU per page (M7, §14). No figure is
   claimed.
 - Findings of scans before the latest are only in the log (and the reports), not in the API.
+
+## M7: Benchmarks and documentation (2026-10-03)
+
+Docs checked for this milestone (2026-10-03): R2 pricing (operation classes, free tier; page
+updated 2026-10-01), Durable Objects pricing (requests, rows read/written, duration; 2026-09-30),
+Queues pricing (operations per message, batching; 2026-04-21), Workers pricing (2026-10-02), the DO
+SQLite storage API (`SqlStorageCursor.rowsRead/rowsWritten`, index rows), Workers secrets (`secret
+put` deploys), DO lifecycle (deploys restart objects), DO class deletion via `exports` tombstones,
+R2 bucket deletion (must be empty) and bucket locks (deletion and overwrite, per prefix); `wrangler`
+4.147 `--help` for `delete`, `queues delete`, `workflows delete`, `r2 bucket notification delete`,
+`r2 object get/put`. Code: `bench/`, `worker/bench/`, `worker/vitest.bench.config.ts`,
+`scripts/lib/dev.ts`, the dev simulator, `/api/v1/status` `backfill`. Docs: `README.md`,
+`docs/{DESIGN,THREAT_MODEL,BENCHMARKS,OPERATIONS,DEMO}.md`.
+
+### D7.1 Every benchmark ran locally, and says so
+
+- **Decision:** run all of PLAN §14 against local simulation (`wrangler dev`, workerd, Miniflare
+  R2/DO/Queues/Workflows) and Node, and label every result file and doc section as local. Nothing
+  was deployed (working agreement 4).
+- **What transfers:** operation counts (§3, §4) are properties of the code and do not depend on the
+  machine. Timings (§1, §2, §5, §6) do not transfer: on Cloudflare every DO commit is replicated and
+  every R2 call crosses the network, and R2's own notification delay (part of §1) is invisible
+  locally.
+- **Deferred:** the same measurements on a real deployment, and a real bill to check the cost model
+  (§7). The sequencer, latency and auditor harnesses talk to the Worker only over HTTP, so pointing
+  them at a deployed host is mostly a matter of replacing `startDev` and the simulator (not done:
+  the simulator has no remote equivalent for the direct-append path).
+
+### D7.2 Harness structure
+
+- `bench/*.ts` are Node scripts (`npm run bench:*`), each writing `bench/results/<name>.json` with
+  the environment (date, commit and dirty flag, CPU, versions, runtime). Percentiles are
+  nearest-rank, so every reported value was observed.
+- Timings come from the driving process (`performance.now()`), never from inside workerd, whose
+  clocks advance only on I/O.
+- The `wrangler dev` launcher (env file, stripped environment, random ports, process-group kill)
+  moved from `scripts/conformance.ts` to `scripts/lib/dev.ts` and is shared; the conformance
+  harness was re-run after the move (D7.11).
+- The amplification benchmark runs inside workerd as a separate vitest project
+  (`worker/vitest.bench.config.ts`, not part of `npm test`); each test puts its counts in
+  `task.meta`, and `bench/amplification.ts` reads them from vitest's JSON reporter, which includes
+  `meta` (checked in the vitest 4.1 source). Benchmark parameters reach the isolate as a binding,
+  not `process.env`, so the bench runs with production's compatibility flags.
+
+### D7.3 The dev simulator writes real local objects and can append directly
+
+- `POST /__simulate/objects` writes or deletes objects in the **local monitored bucket** and, unless
+  `notify: false`, queues the notification R2 would send, built from the stored object (real ETag,
+  size, upload time). Without it, local audits could only report "everything missing"; with it, the
+  README demo shows all three main findings, and the auditor benchmark has a bucket that matches
+  the log. `notify: false` is the local stand-in for a disabled notification rule.
+- `POST /__simulate/append` calls `Sequencer.append` directly, so the Sequencer can be measured
+  without the queue's batching in front.
+- Both need cross-Worker bindings in one `wrangler dev`: a DO binding with `script_name: "r2notary"`
+  and the same `bucket_name`. Verified to share the Sequencer and the bucket under wrangler 4.147.
+- The simulator has no authentication and can append arbitrary entries. It was already dev-only;
+  its config now says so more loudly, and `docs/OPERATIONS.md` says never to deploy it.
+- `npm run dev:sim` now passes `--persist-to .wrangler/state`, so the README can point
+  `wrangler r2 object --local` at the same storage for the tamper step.
+
+### D7.4 Counting operations: wrap the binding prototypes in the test isolate
+
+- **Decision:** count R2 calls and SQLite rows by wrapping `R2Bucket.prototype` methods and
+  `SqlStorage.prototype.exec` in the vitest isolate, where the Sequencer runs too, and summing each
+  cursor's `rowsRead`/`rowsWritten` (which the DO docs say are the billed values; index rows count).
+  `setAlarm` calls are counted separately because the docs bill each as one row written.
+- **Alternatives:** counters in production code (adds work to the hot path, and counts of crashed
+  attempts would be lost or need their own persistence); computing counts from the code by hand
+  (not a measurement); R2 and DO metrics on a real account (the right check, later, D7.1).
+- **Why:** it measures the unmodified code path, including the queue handler, alarm scheduling and
+  commit, and the counts are exact. Whether local workerd's row counters match production billing
+  exactly is assumed from the docs, not verified.
+
+### D7.5 A spawn-cost artifact in the proof benchmark
+
+The first version of `bench/proofs.ts` kept the generated log in memory and timed the CLI from that
+process. The checkpoint-only baseline rose from 6 ms (10³ entries) to 16.7 ms (10⁵): spawning a
+child from a process with a large heap is slower, and that was being reported as verification
+time. Each log is now generated by a child process and served from disk; the baseline is then flat
+across sizes (5.6-6.1 ms). Recorded because the wrong version produced plausible-looking numbers.
+
+### D7.6 Finding: Durable Object rows written dominate the cost
+
+- **Measured** (`amplification.json`): about 11 billed rows written per event at large batches
+  (about 4 at ingest, 6 at publication, 1 to prune the dedupe record), more at small ones. In the
+  cost model (`cost.json`) this is 60-90 % of the write path's list price in every scenario, far
+  above R2 operations.
+- **Likely sources** (from the schema; only totals were counted): `seen` has a text primary key
+  (a separate index on a rowid table) plus an expiry index; `objects` has a text primary key plus the
+  partial `objects_live` index; `key_index` has a composite primary key on a rowid table.
+- **Follow-ups, not done in M7** (a schema migration with its own tests is outside a documentation
+  milestone): `WITHOUT ROWID` for `seen`, `objects` and `key_index`; prune `seen` by sequence number
+  or a time-bucketed table instead of an expiry index. Measure each with the same benchmark before
+  and after.
+
+### D7.7 Finding: retained partial resources dominate R2 storage at small batches
+
+Every publication writes a new partial bundle (all entries since the last full bundle) and partial
+tile, and superseded partials are kept (D4.5). At one entry per publication, about 38 KB of R2
+storage is added per entry. tlog-tiles allows deleting a partial once the full tile exists, but
+archived checkpoints of intermediate sizes then lose their exact partials, and the Go CLI does not
+yet fall back to truncating the full tile. **Follow-up:** CLI fallback first, then a cleanup pass
+in the writer. Not done in M7.
+
+### D7.8 Finding: under overload, appends crowd out publication
+
+Locally, one Sequencer sustains about 3,000 entries/s (appends of 100 plus publication), which
+matches the two jobs taking turns on one thread. With 16 concurrent appenders, publication fell to
+2,045 entries/s and the backlog grew. Nothing is lost (entries are durable before the append
+returns), but visibility lags. No change made: on Cloudflare the queue in front delivers at most one
+RPC per batch of 100, and the real ceiling is unmeasured. If it matters there, publication could be
+given priority (for example, appends wait while a publication is overdue).
+
+### D7.9 Key rotation: documented, with a gap in the CLI
+
+`docs/OPERATIONS.md` §8 gives the procedure (same key name, `secret put`, the deploy restarts the
+Sequencer, which loads the new key; archived checkpoints are compared by signed text, D2.5). The gap:
+the Go CLI accepts one `--vkey`, so a monitor's saved state from before a rotation cannot be
+verified afterwards, and there is no command proving that the new key's tree extends the old key's
+last checkpoint. Go's `note.VerifierList` makes multiple keys straightforward. **Deferred** (a CLI
+feature, not documentation).
+
+### D7.10 Documentation and the README quickstart
+
+- New: `docs/DESIGN.md` (with "Questions a reviewer will ask"), `docs/THREAT_MODEL.md`,
+  `docs/BENCHMARKS.md`. Rewritten: `README.md`, `docs/OPERATIONS.md` (deployment order, scoped R2
+  tokens, bucket locks, key rotation, teardown, cost notes). Extended: `docs/DEMO.md` (corrupting a
+  tile and restoring it; step 1 writes 300 objects instead of PLAN's 100 so that a full tile exists
+  to corrupt).
+- **Acceptance check "a new reader can reproduce the local demo from the README alone":** the
+  README's commands were run verbatim (extracted from the file) in a fresh clone overlaid with the
+  M7 working tree, with nothing else installed beyond Node and Go: 300 objects logged and verified,
+  a clean audit, three proven findings after changes made without notifications, consistency with
+  the saved checkpoint, a flipped tile bit rejected with exit 1, exit 0 after restoring it.
+- **Acceptance check "every number in the README appears in `bench/results/`":** each figure in the
+  README's "Measured, locally" table was checked against the result files. Time estimates for
+  running things were removed from the docs rather than measured.
+- `/api/v1/status` now also shows the latest **backfill** (it was visible only through Workflows
+  tooling); the auditor benchmark needed it and so do operators. Test-first in
+  `audit-workflow.test.ts`.
+
+### D7.11 Verification of this milestone
+
+Build, lint, typecheck, format, `npm test`, Go vet/staticcheck/tests and `npm run conformance` (to
+cover the launcher refactor and the simulator changes) were run before the commit; results are in
+the commit message. The benchmarks were run once each, on one machine, at the stated commit plus
+these changes; their variance across machines or runs is not characterised beyond the reported
+percentiles.
+
+### D7.12 Deferred from M7
+
+- Benchmarks on Cloudflare's network, and a real bill (D7.1).
+- The real-R2 demo and remote contract tests (still need approval; unchanged from D6.14).
+- Cost reductions found by the benchmarks (D7.6, D7.7) and publication priority under overload
+  (D7.8).
+- Multi-key verification in the CLI (D7.9).
+- A staleness alarm in `monitor` (a log that stops growing is not reported; `docs/THREAT_MODEL.md`).
+- CI still not observed running (D0.8); the benchmarks are not run in CI (timings there would mean
+  nothing), but their code is type-checked and linted.

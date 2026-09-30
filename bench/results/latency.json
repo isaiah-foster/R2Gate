@@ -1,0 +1,118 @@
+{
+  "benchmark": "PLAN §14.1 event -> visible latency",
+  "environment": {
+    "date": "2026-10-03T07:34:26.824Z",
+    "commit": "f35a560",
+    "dirty": true,
+    "os": "linux 7.2.5-4-omarchy",
+    "cpu": "AMD Ryzen 5 3600 6-Core Processor",
+    "cpus": 12,
+    "memoryGiB": 16,
+    "node": "v26.10.0",
+    "go": "go1.27.1-X:nodwarf5",
+    "wrangler": "4.147.0",
+    "workerd": "1.20261001.1",
+    "runtime": "wrangler dev (local Queues, workerd, DO SQLite, R2), timed from Node over localhost HTTP"
+  },
+  "config": {
+    "events": 1000,
+    "eventsPerSendRequest": "rate / 10 (one request every 100 ms)",
+    "pollMs": 50,
+    "queue": "max_batch_size 100, max_batch_timeout 5 s (worker/wrangler.jsonc)",
+    "batchMaxEntries": 500,
+    "start": "send request to the local queue issued (excludes R2 -> queue notification delay)",
+    "end": "first /api/v1/status poll whose published size covers the event"
+  },
+  "results": [
+    {
+      "checkpointIntervalMs": 1000,
+      "events": 1000,
+      "ratePerSecond": 25,
+      "latencyMs": {
+        "n": 1000,
+        "min": 1019,
+        "median": 3059,
+        "p95": 4858,
+        "p99": 4994,
+        "max": 5010,
+        "mean": 3016
+      },
+      "distinctPublishedSizesSeen": 10
+    },
+    {
+      "checkpointIntervalMs": 5000,
+      "events": 1000,
+      "ratePerSecond": 25,
+      "latencyMs": {
+        "n": 1000,
+        "min": 951,
+        "median": 5030,
+        "p95": 8629,
+        "p99": 8906,
+        "max": 9025,
+        "mean": 5028
+      },
+      "distinctPublishedSizesSeen": 5
+    },
+    {
+      "checkpointIntervalMs": 15000,
+      "events": 1000,
+      "ratePerSecond": 25,
+      "latencyMs": {
+        "n": 1000,
+        "min": 3036,
+        "median": 12373,
+        "p95": 18374,
+        "p99": 18876,
+        "max": 19027,
+        "mean": 11832
+      },
+      "distinctPublishedSizesSeen": 3
+    },
+    {
+      "checkpointIntervalMs": 1000,
+      "events": 1000,
+      "ratePerSecond": 50,
+      "latencyMs": {
+        "n": 1000,
+        "min": 1018,
+        "median": 1961,
+        "p95": 2861,
+        "p99": 2944,
+        "max": 2961,
+        "mean": 1985
+      },
+      "distinctPublishedSizesSeen": 10
+    },
+    {
+      "checkpointIntervalMs": 5000,
+      "events": 1000,
+      "ratePerSecond": 50,
+      "latencyMs": {
+        "n": 1000,
+        "min": 1051,
+        "median": 4350,
+        "p95": 6751,
+        "p99": 6950,
+        "max": 6953,
+        "mean": 4201
+      },
+      "distinctPublishedSizesSeen": 4
+    },
+    {
+      "checkpointIntervalMs": 15000,
+      "events": 1000,
+      "ratePerSecond": 50,
+      "latencyMs": {
+        "n": 1000,
+        "min": 68,
+        "median": 4978,
+        "p95": 9479,
+        "p99": 9879,
+        "max": 9978,
+        "mean": 5023
+      },
+      "distinctPublishedSizesSeen": 2
+    }
+  ]
+}

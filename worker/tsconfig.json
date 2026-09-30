@@ -6,10 +6,12 @@
   "include": [
     "src",
     "dev",
+    "bench",
     "test",
     "test-remote",
     "vitest.config.ts",
     "vitest.remote.config.ts",
+    "vitest.bench.config.ts",
     "worker-configuration.d.ts"
   ]
 }

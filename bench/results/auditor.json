@@ -1,0 +1,68 @@
+{
+  "benchmark": "PLAN §14.6 auditor throughput",
+  "environment": {
+    "date": "2026-10-03T07:30:11.766Z",
+    "commit": "f35a560",
+    "dirty": true,
+    "os": "linux 7.2.5-4-omarchy",
+    "cpu": "AMD Ryzen 5 3600 6-Core Processor",
+    "cpus": 12,
+    "memoryGiB": 16,
+    "node": "v26.10.0",
+    "go": "go1.27.1-X:nodwarf5",
+    "wrangler": "4.147.0",
+    "workerd": "1.20261001.1",
+    "runtime": "wrangler dev (local Workflows engine, workerd, DO SQLite, R2), timed from Node over localhost HTTP"
+  },
+  "config": {
+    "objects": 10000,
+    "objectBytes": 1024,
+    "runs": 5,
+    "pageSize": 1000,
+    "auditGraceSeconds": 0,
+    "timing": "POST /api/v1/admin/{scan,backfill} until the scan state is done, polled every 100 ms"
+  },
+  "audit": {
+    "objects": 10000,
+    "pages": 10,
+    "ms": {
+      "n": 5,
+      "min": 771.671,
+      "median": 795.38,
+      "p95": 891.118,
+      "p99": 891.118,
+      "max": 891.118,
+      "mean": 820
+    },
+    "objectsPerSecondAtMedian": 12573
+  },
+  "backfill": {
+    "objects": 10000,
+    "pages": 10,
+    "ms": 2263.36,
+    "objectsPerSecond": 4418
+  },
+  "deepScrub": {
+    "objects": 20,
+    "bytesPerObject": 8388608,
+    "auditWithoutScrubMs": {
+      "n": 5,
+      "min": 38.294,
+      "median": 40.52,
+      "p95": 59.729,
+      "p99": 59.729,
+      "max": 59.729,
+      "mean": 43.836
+    },
+    "auditWithScrubMs": {
+      "n": 5,
+      "min": 959.52,
+      "median": 987.14,
+      "p95": 1061.372,
+      "p99": 1061.372,
+      "max": 1061.372,
+      "mean": 998.03
+    },
+    "megabytesPerSecondAtMedians": 177.2
+  }
+}

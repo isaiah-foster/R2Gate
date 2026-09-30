@@ -42,6 +42,8 @@ npm run dev:sim              # local wrangler dev: r2notary + dev-only event sim
 npm run simulate -- --help   # send synthetic R2 notifications to dev:sim; compare /api/v1/status
 npm run keygen -- --origin <LOG_ORIGIN> --out worker/.dev.vars   # local secrets (gitignored)
 npm run conformance          # wrangler dev writer -> Go verifier, audit findings, corruption (~1 min)
+npm run bench                # PLAN §14 benchmarks -> bench/results/*.json (local only; see docs/BENCHMARKS.md)
+npm run bench:amplification  # one of: hashing proofs amplification cost sequencer latency auditor
 
 cd cli && go vet ./... && go test ./...
 cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI runs
@@ -50,7 +52,9 @@ cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI r
 ## Layout
 
 `packages/core` pure TS (no Workers APIs except WebCrypto) · `worker` Cloudflare Worker + Sequencer DO ·
-`cli` Go verifier · `scripts`, `bench/results`, `docs`. See PLAN §4 for the full target layout.
+`cli` Go verifier · `scripts` (`scripts/lib/dev.ts` runs wrangler dev for harnesses) · `bench` (Node
+drivers; `worker/bench` runs inside workerd) · `bench/results` · `docs` (DESIGN, THREAT_MODEL,
+DECISIONS, BENCHMARKS, OPERATIONS, DEMO). See PLAN §4 for the full target layout.
 
 ## Conventions and gotchas
 
@@ -100,4 +104,13 @@ cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI r
   confirmed only if the key's `objects` row is unchanged after the grace window (D6.5). Worker
   tests run with `AUDIT_GRACE_SECONDS=0` and `DEEP_SCRUB_SAMPLE_RATE=1` (vitest.config.ts).
   `x-reports/` is create-if-absent but, unlike tiles, not a pure function of the log prefix (D6.11).
+- Benchmarks (M7): every figure in README/docs must be copied from `bench/results/*.json`; if code
+  on a measured path changes, re-run that benchmark rather than editing numbers. Time only from the
+  driving Node process (workerd clocks move only on I/O). Operation counts come from wrapping
+  binding prototypes inside the vitest isolate (`worker/bench/amplification.bench.ts`, D7.4). Never
+  spawn timed child processes from a process holding a large heap (D7.5). All results are local;
+  say so wherever they are quoted.
+- Dev simulator (`worker/dev/simulator.ts`): `/__simulate/{send,objects,append}`, unauthenticated,
+  never deployed. `objects` writes real local objects with or without a notification (the local
+  stand-in for a disabled rule). `npm run dev:sim` persists to `.wrangler/state`.
 - Commit trailer: end commits with the attribution line the harness specifies.

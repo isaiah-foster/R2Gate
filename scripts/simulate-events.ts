@@ -7,11 +7,17 @@
 //
 // --dry-run prints the messages as JSON lines instead of sending them. Only talks to the URL
 // given (default http://localhost:8787); it has no way to reach a real queue.
+//
+// --objects writes `count` real objects (<prefix>1 .. <prefix>N, a line of text each) to the
+// local monitored bucket instead, each with the notification R2 would send, so the auditor sees a
+// bucket that matches the log (worker/dev/simulator.ts /__simulate/objects):
+//   npm run simulate -- --objects --count 300 --prefix demo/obj-
 
 import { parseArgs } from 'node:util';
 import { simulate } from './simulate/events.ts';
 
 const SEND_PATH = '/__simulate/send'; // worker/dev/simulator.ts
+const OBJECTS_PATH = '/__simulate/objects';
 const CHUNK = 100; // sendBatch maximum
 
 const { values } = parseArgs({
@@ -28,6 +34,8 @@ const { values } = parseArgs({
     bucket: { type: 'string', default: 'example-monitored-bucket' },
     'log-bucket': { type: 'string', default: 'example-log-bucket' },
     'dry-run': { type: 'boolean', default: false },
+    objects: { type: 'boolean', default: false },
+    prefix: { type: 'string', default: 'demo/obj-' },
     help: { type: 'boolean', default: false },
   },
 });
@@ -36,7 +44,8 @@ if (values.help) {
   console.log(
     'usage: simulate-events [--url U] [--count N] [--seed S] [--keys K] [--duplicates 0..1]\n' +
       '         [--shuffle W] [--malformed N] [--loop N] [--foreign N] [--bucket B]\n' +
-      '         [--log-bucket B] [--dry-run]',
+      '         [--log-bucket B] [--dry-run]\n' +
+      '       simulate-events --objects [--url U] [--count N] [--prefix P]',
   );
   process.exit(0);
 }
@@ -52,6 +61,27 @@ const whole = (name: string, v: string): number => {
   if (!Number.isInteger(n)) throw new Error(`--${name} must be an integer`);
   return n;
 };
+
+async function post(path: string, body: unknown): Promise<void> {
+  const res = await fetch(new URL(path, values.url), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${path} failed: ${String(res.status)} ${await res.text()}`);
+}
+
+if (values.objects) {
+  const count = whole('count', values.count);
+  const ops = Array.from({ length: count }, (_, i) => ({
+    op: 'put',
+    key: `${values.prefix}${String(i + 1)}`,
+    text: `object ${String(i + 1)}\n`,
+  }));
+  for (let i = 0; i < ops.length; i += CHUNK) await post(OBJECTS_PATH, ops.slice(i, i + CHUNK));
+  console.error(JSON.stringify({ objects: count, keys: `${values.prefix}1..${String(count)}` }));
+  process.exit(0);
+}
 
 const seed = whole('seed', values.seed);
 const { messages, manifest } = simulate({
@@ -72,12 +102,7 @@ if (values['dry-run']) {
 } else {
   // undefined fields (one malformed variant) are dropped by JSON, as they would be on a real queue.
   for (let i = 0; i < messages.length; i += CHUNK) {
-    const res = await fetch(new URL(SEND_PATH, values.url), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(messages.slice(i, i + CHUNK)),
-    });
-    if (!res.ok) throw new Error(`send failed: ${String(res.status)} ${await res.text()}`);
+    await post(SEND_PATH, messages.slice(i, i + CHUNK));
   }
 }
 

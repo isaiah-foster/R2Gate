@@ -14,14 +14,22 @@
   "scripts": {
     "test": "vitest run",
     "test:contract:remote": "vitest run --config worker/vitest.remote.config.ts",
-    "dev:sim": "wrangler dev -c worker/dev/wrangler.simulator.jsonc -c worker/wrangler.jsonc",
+    "dev:sim": "wrangler dev -c worker/dev/wrangler.simulator.jsonc -c worker/wrangler.jsonc --persist-to .wrangler/state",
     "simulate": "node scripts/simulate-events.ts",
     "keygen": "node scripts/keygen.ts",
     "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "conformance": "node scripts/conformance.ts"
+    "conformance": "node scripts/conformance.ts",
+    "bench:hashing": "node bench/hashing.ts",
+    "bench:proofs": "node bench/proofs.ts",
+    "bench:amplification": "node bench/amplification.ts",
+    "bench:cost": "node bench/cost.ts",
+    "bench:sequencer": "node bench/sequencer.ts",
+    "bench:latency": "node bench/latency.ts",
+    "bench:auditor": "node bench/auditor.ts",
+    "bench": "npm run bench:hashing && npm run bench:proofs && npm run bench:amplification && npm run bench:cost && npm run bench:sequencer && npm run bench:latency && npm run bench:auditor"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.3.6",

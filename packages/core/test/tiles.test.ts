@@ -127,19 +127,27 @@ describe('tile builder', () => {
   });
 
   // I1: the published root equals the naive recursive MTH, including at tile boundaries.
-  it('I1: root equals naive MTH at sizes around 255/256/257 and 65,535/65,536/65,537', async () => {
-    const leaves = syntheticLeafHashes(65_537);
-    const checkpoints = [255, 256, 257, 65_535, 65_536, 65_537];
-    let state = EMPTY_TREE;
-    for (const size of checkpoints) {
-      state = (await extendTree(state, leaves.slice(state.size, size))).state;
-      expect(state.size).toBe(size);
-      expect(hex(await treeRoot(state)), `size ${String(size)}`).toBe(
-        hex(refRootFromLeafHashes(leaves.slice(0, size))),
-      );
-      for (const t of partialTiles(state)) expectTileMatchesSpec(t, leaves);
-    }
-  });
+  // Slow (several 65k-leaf trees and their naive roots): it sometimes exceeded vitest's default 5 s
+  // timeout while the worker suite ran alongside (seen in M7). Not a performance test.
+  it(
+    'I1: root equals naive MTH at sizes around 255/256/257 and 65,535/65,536/65,537',
+    {
+      timeout: 60_000,
+    },
+    async () => {
+      const leaves = syntheticLeafHashes(65_537);
+      const checkpoints = [255, 256, 257, 65_535, 65_536, 65_537];
+      let state = EMPTY_TREE;
+      for (const size of checkpoints) {
+        state = (await extendTree(state, leaves.slice(state.size, size))).state;
+        expect(state.size).toBe(size);
+        expect(hex(await treeRoot(state)), `size ${String(size)}`).toBe(
+          hex(refRootFromLeafHashes(leaves.slice(0, size))),
+        );
+        for (const t of partialTiles(state)) expectTileMatchesSpec(t, leaves);
+      }
+    },
+  );
 
   it('I1: root equals naive MTH for every size 0..600', async () => {
     const leaves = syntheticLeafHashes(600);
