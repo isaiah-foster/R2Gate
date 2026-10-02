@@ -12,8 +12,12 @@ percentiles). If a figure is not in those files, it is not claimed.
 
 ## Environment
 
-All runs on 2026-10-03, from commit `f35a560` plus the uncommitted M7 changes (each result file
-records `dirty: true`).
+All runs on 2026-10-03. M7 measured at commit `f35a560` plus its uncommitted changes. **Re-run for
+M8** at commit `75a0b24` plus the uncommitted M8 changes (each file records its commit and
+`dirty: true`), because M8 changed code on every measured path (DECISIONS D8.13); the M8 defaults
+(no witnesses, no key blinding) are what was measured. Operation counts (§3) are identical to M7's
+except one-time costs of the new schema; the timings are a new run, so they differ from M7's by
+ordinary run-to-run variation.
 
 |                    |                                                                  |
 | ------------------ | ---------------------------------------------------------------- |
@@ -59,12 +63,12 @@ to notification, which a local run cannot observe.
 
 | rate | `CHECKPOINT_INTERVAL_MS` | median    | p95       | p99       | max       | n     |
 | ---- | ------------------------ | --------- | --------- | --------- | --------- | ----- |
-| 25/s | 1,000                    | 3,059 ms  | 4,858 ms  | 4,994 ms  | 5,010 ms  | 1,000 |
-| 25/s | 5,000                    | 5,030 ms  | 8,629 ms  | 8,906 ms  | 9,025 ms  | 1,000 |
-| 25/s | 15,000                   | 12,373 ms | 18,374 ms | 18,876 ms | 19,027 ms | 1,000 |
-| 50/s | 1,000                    | 1,961 ms  | 2,861 ms  | 2,944 ms  | 2,961 ms  | 1,000 |
-| 50/s | 5,000                    | 4,350 ms  | 6,751 ms  | 6,950 ms  | 6,953 ms  | 1,000 |
-| 50/s | 15,000                   | 4,978 ms  | 9,479 ms  | 9,879 ms  | 9,978 ms  | 1,000 |
+| 25/s | 1,000                    | 3,056 ms  | 4,858 ms  | 4,993 ms  | 5,019 ms  | 1,000 |
+| 25/s | 5,000                    | 5,028 ms  | 8,627 ms  | 8,902 ms  | 9,021 ms  | 1,000 |
+| 25/s | 15,000                   | 12,388 ms | 18,388 ms | 18,882 ms | 19,029 ms | 1,000 |
+| 50/s | 1,000                    | 1,963 ms  | 2,864 ms  | 2,949 ms  | 2,963 ms  | 1,000 |
+| 50/s | 5,000                    | 4,321 ms  | 6,738 ms  | 6,938 ms  | 6,945 ms  | 1,000 |
+| 50/s | 15,000                   | 4,977 ms  | 9,477 ms  | 9,877 ms  | 9,975 ms  | 1,000 |
 
 Reading it:
 
@@ -87,36 +91,38 @@ straight to it by RPC (`/__simulate/append`), bypassing the queue.
 
 | entries per call | median  | p95     | entries/s at the median |
 | ---------------- | ------- | ------- | ----------------------- |
-| 1                | 4.4 ms  | 5.4 ms  | 227                     |
-| 10               | 5.6 ms  | 7.5 ms  | 1,796                   |
-| 100              | 19.4 ms | 20.9 ms | 5,163                   |
+| 1                | 4.3 ms  | 5.4 ms  | 230                     |
+| 10               | 5.8 ms  | 7.5 ms  | 1,728                   |
+| 100              | 20.6 ms | 22.3 ms | 4,862                   |
 
-**One publication** (`POST /api/v1/admin/publish`), 15 samples each:
+**One publication** (`POST /api/v1/admin/publish`), 15 samples each. At 1,000 entries
+(`BATCH_MAX_ENTRIES`) the alarm is due as soon as the entries are appended; a sample in which the
+alarm finished the publication before the timed call arrived is discarded and counted (D8.13):
 
-| entries | median   | p95      | entries/s at the median |
-| ------- | -------- | -------- | ----------------------- |
-| 1       | 10.9 ms  | 12.0 ms  | 92                      |
-| 10      | 12.7 ms  | 14.4 ms  | 788                     |
-| 100     | 25.8 ms  | 28.5 ms  | 3,873                   |
-| 500     | 78.3 ms  | 86.6 ms  | 6,385                   |
-| 1,000   | 148.7 ms | 156.8 ms | 6,723                   |
+| entries | median   | p95      | entries/s at the median | samples discarded |
+| ------- | -------- | -------- | ----------------------- | ----------------- |
+| 1       | 11.0 ms  | 13.0 ms  | 91                      | 0                 |
+| 10      | 13.0 ms  | 16.7 ms  | 768                     | 0                 |
+| 100     | 24.9 ms  | 28.4 ms  | 4,013                   | 0                 |
+| 500     | 78.5 ms  | 95.3 ms  | 6,365                   | 0                 |
+| 1,000   | 148.9 ms | 155.3 ms | 6,718                   | 0                 |
 
 **Sustained load**: `c` clients append batches of 100 as fast as they can for about 20 s while the
 alarm publishes (`CHECKPOINT_INTERVAL_MS=1000`, `BATCH_MAX_ENTRIES=500`):
 
 | clients | accepted/s | published/s | backlog at the end | time to drain it | append call median / p95 |
 | ------- | ---------- | ----------- | ------------------ | ---------------- | ------------------------ |
-| 1       | 2,932      | 2,932       | 0                  | –                | 19.5 / 94.7 ms           |
-| 2       | 3,102      | 3,087       | 300                | 0.8 s            | 43.2 / 129.1 ms          |
-| 4       | 3,021      | 3,011       | 200                | 1.0 s            | 143.4 / 186.2 ms         |
-| 8       | 3,071      | 2,940       | 2,700              | 0.6 s            | 245.6 / 324.4 ms         |
-| 16      | 4,366      | 2,045       | 47,100             | 8.0 s            | 367.6 / 412.1 ms         |
+| 1       | 2,855      | 2,845       | 200                | 1.0 s            | 20.3 / 98.8 ms           |
+| 2       | 3,009      | 3,004       | 100                | 0.8 s            | 44.6 / 132.7 ms          |
+| 4       | 2,890      | 2,886       | 100                | 0.5 s            | 147.5 / 194.2 ms         |
+| 8       | 3,109      | 2,827       | 5,700              | 1.1 s            | 234.5 / 338.8 ms         |
+| 16      | 4,281      | 2,007       | 45,900             | 7.8 s            | 376.6 / 465.3 ms         |
 
 **Saturation and bottleneck.** Locally, one Sequencer sustains about 3,000 entries/s whatever the
 number of clients; extra clients only make each call wait longer. The ceiling matches doing both
-jobs on one thread: appending 100 entries alone runs at 5,163/s and publishing 500 at 6,385/s, and
-1 / (1/5,163 + 1/6,385) ≈ 2,850/s. The Durable Object is single-threaded, so appends and
-publications take turns. At 16 clients appends won more of the turns: published/s fell to 2,045,
+jobs on one thread: appending 100 entries alone runs at 4,862/s and publishing 500 at 6,365/s, and
+1 / (1/4,862 + 1/6,365) ≈ 2,760/s. The Durable Object is single-threaded, so appends and
+publications take turns. At 16 clients appends won more of the turns: published/s fell to 2,007,
 and the backlog grew by ~2,300 entries/s until the load stopped. Since an entry is durable when its
 append returns, overload delays visibility; it does not lose entries.
 
@@ -160,6 +166,10 @@ Findings:
   counted; by the schema, the per-entry rows are the entry, the dedupe row and its two indexes at
   ingest, and the expected-state row and its two indexes, the key-index row and its primary-key
   index, and deleting the published entry at publication. Follow-ups in D7.6.
+- **M8's one-time costs** (with blinding and witnesses off, as measured): the log records its key
+  blinding state once (one row written per log, a few rows read per Durable Object instance), and
+  the schema grew by 16 KiB of SQLite pages (`sqliteBytes`). Per-entry and per-batch counts equal
+  M7's at the precision shown (D8.13).
 - **R2 storage grows by far more than the entries at small k.** Every publication writes a new
   partial bundle (all entries since the last full bundle) and partial tile, and superseded partials
   are kept (D4.5). At one entry per publication that is about 38 KB kept per entry; at 500, about
@@ -175,15 +185,15 @@ consistency is at ⌊n/2⌋ + 7.
 
 | log size | operation                       | RFC 6962 proof (hashes) | requests | bytes fetched (tiles + bundle + checkpoint) | median | p95    |
 | -------- | ------------------------------- | ----------------------- | -------- | ------------------------------------------- | ------ | ------ |
-| 10³      | checkpoint only                 | –                       | 1        | 216                                         | 6.1 ms | 7.4 ms |
-| 10³      | inclusion, index 500            | 10                      | 5        | 80,952 (15,712 + 65,024 + 216)              | 6.5 ms | 6.9 ms |
-| 10³      | consistency 507 → 1,000         | 11                      | 4        | 15,928                                      | 6.4 ms | 6.8 ms |
-| 10⁵      | checkpoint only                 | –                       | 1        | 218                                         | 5.7 ms | 6.6 ms |
-| 10⁵      | inclusion, index 50,000         | 17                      | 7        | 91,468 (25,824 + 65,426 + 218)              | 6.9 ms | 7.6 ms |
-| 10⁵      | consistency 50,007 → 100,000    | 18                      | 6        | 26,042                                      | 6.7 ms | 7.3 ms |
-| 10⁶      | checkpoint only                 | –                       | 1        | 219                                         | 5.6 ms | 7.2 ms |
-| 10⁶      | inclusion, index 500,000        | 20                      | 7        | 86,925 (21,024 + 65,682 + 219)              | 6.7 ms | 7.0 ms |
-| 10⁶      | consistency 500,007 → 1,000,000 | 21                      | 6        | 21,243                                      | 6.4 ms | 6.9 ms |
+| 10³      | checkpoint only                 | –                       | 1        | 216                                         | 6.0 ms | 6.6 ms |
+| 10³      | inclusion, index 500            | 10                      | 5        | 80,952 (15,712 + 65,024 + 216)              | 6.7 ms | 6.9 ms |
+| 10³      | consistency 507 → 1,000         | 11                      | 4        | 15,928                                      | 6.3 ms | 6.7 ms |
+| 10⁵      | checkpoint only                 | –                       | 1        | 218                                         | 5.7 ms | 7.8 ms |
+| 10⁵      | inclusion, index 50,000         | 17                      | 7        | 91,468 (25,824 + 65,426 + 218)              | 7.0 ms | 7.6 ms |
+| 10⁵      | consistency 50,007 → 100,000    | 18                      | 6        | 26,042                                      | 6.8 ms | 7.1 ms |
+| 10⁶      | checkpoint only                 | –                       | 1        | 219                                         | 5.9 ms | 7.2 ms |
+| 10⁶      | inclusion, index 500,000        | 20                      | 7        | 86,925 (21,024 + 65,682 + 219)              | 6.8 ms | 7.0 ms |
+| 10⁶      | consistency 500,007 → 1,000,000 | 21                      | 6        | 21,243                                      | 6.5 ms | 7.0 ms |
 
 `proofs.json` also has indexes 0 and n − 1 (the last entry sits in a partial tile and bundle, so it
 fetches less).
@@ -207,30 +217,30 @@ tree of 65,536 leaves (131,071 SHA-256 calls), 15 runs after 2 warm-ups:
 
 | strategy                                            | median   | p95      | leaves/s at the median |
 | --------------------------------------------------- | -------- | -------- | ---------------------- |
-| one `await` per hash                                | 2,539 ms | 2,681 ms | 25,817                 |
-| `Promise.all` per level (what `packages/core` does) | 1,086 ms | 1,295 ms | 60,343                 |
-| `Promise.all` in chunks of 256                      | 942 ms   | 1,073 ms | 69,592                 |
-| Node `createHash`, synchronous (reference only)     | 683 ms   | 1,095 ms | 95,961                 |
+| one `await` per hash                                | 2,422 ms | 2,580 ms | 27,055                 |
+| `Promise.all` per level (what `packages/core` does) | 1,048 ms | 1,216 ms | 62,563                 |
+| `Promise.all` in chunks of 256                      | 906 ms   | 1,050 ms | 72,348                 |
+| Node `createHash`, synchronous (reference only)     | 723 ms   | 1,220 ms | 90,664                 |
 
 In-memory work of one publication (`appendEntries` + Ed25519 signature) from a 1,000-entry log:
 
-| entries | median  | p95      |
-| ------- | ------- | -------- |
-| 1       | 2.2 ms  | 2.4 ms   |
-| 10      | 3.8 ms  | 202.2 ms |
-| 100     | 3.1 ms  | 6.1 ms   |
-| 500     | 8.0 ms  | 14.2 ms  |
-| 1,000   | 14.2 ms | 18.9 ms  |
+| entries | median  | p95     |
+| ------- | ------- | ------- |
+| 1       | 2.3 ms  | 3.5 ms  |
+| 10      | 2.1 ms  | 2.5 ms  |
+| 100     | 3.1 ms  | 3.3 ms  |
+| 500     | 8.7 ms  | 11.5 ms |
+| 1,000   | 15.4 ms | 19.7 ms |
 
 - Batching matters: issuing a level's hashes together is 2.3× faster than awaiting each one.
   Bounding it to 256 in flight is slightly faster still in Node (less pending-promise overhead);
   the difference is small next to the run-to-run spread and was not adopted.
 - Node's `createHash` is only a reference: `packages/core` must use WebCrypto. Node's WebCrypto
   runs digests on libuv's thread pool and workerd's does not, so the ratio in workerd is unknown.
-- The 202 ms p95 at 10 entries is one outlier among 15 runs (likely garbage collection), kept as
-  measured.
-- Across runtimes, so only roughly: the computation of a 500-entry publication takes 8 ms in Node,
-  while the whole local publication in §2 takes 78 ms. Most of a publication is R2 writes, SQLite
+- M7's run had a 202 ms p95 at 10 entries, one outlier among 15 runs (likely garbage
+  collection); the M8 run has none (2.5 ms).
+- Across runtimes, so only roughly: the computation of a 500-entry publication takes 8.7 ms in Node,
+  while the whole local publication in §2 takes 78.5 ms. Most of a publication is R2 writes, SQLite
   and the RPC, not hashing.
 
 ## 6. Auditor (PLAN §14.6)
@@ -241,15 +251,15 @@ the grace window (300 s by default) after its last page.
 
 | what                                      | objects | pages | time (median of 5 / single run) | objects/s |
 | ----------------------------------------- | ------- | ----- | ------------------------------- | --------- |
-| audit, bucket matches the log, 0 findings | 10,000  | 10    | 795 ms (p95 891 ms)             | 12,573    |
-| backfill of unlogged objects              | 10,000  | 10    | 2,263 ms (one run)              | 4,418     |
+| audit, bucket matches the log, 0 findings | 10,000  | 10    | 781 ms (p95 807 ms)             | 12,811    |
+| backfill of unlogged objects              | 10,000  | 10    | 2,291 ms (one run)              | 4,365     |
 
 A backfill appends and publishes one snapshot entry per object, which is why it is slower than an
 audit that appends only its start and end entries.
 
 **Deep scrub**: 20 objects of 8 MiB (one page; at most 20 bodies are hashed per page), audited
-with `DEEP_SCRUB_SAMPLE_RATE=0` (median 41 ms) and then, on the same state, `=1` (median 987 ms):
-**177 MB/s** at the medians (167.8 MB hashed with `crypto.DigestStream`, local disk reads). On the
+with `DEEP_SCRUB_SAMPLE_RATE=0` (median 39 ms) and then, on the same state, `=1` (median 951 ms):
+**184 MB/s** at the medians (167.8 MB hashed with `crypto.DigestStream`, local disk reads). On the
 Workers Free plan a step has 10 ms of CPU, which this rate suggests would not cover even one 8 MiB
 body; not measured there.
 
@@ -268,13 +278,13 @@ Monthly list price of the write path, before included allowances, in USD:
 | ------------ | -------- | ----------------------- | ---------- | --------------- | ------ | ------------ | ------------------------------------------------- |
 | 1M           | 1 s      | 1.4                     | 13.01      | 22.34           | 1.20   | 37.33        | 14.32                                             |
 | 1M           | 5 s      | 2.9                     | 6.18       | 17.09           | 1.20   | 24.93        | 7.48                                              |
-| 1M           | 15 s     | 6.8                     | 2.70       | 14.41           | 1.20   | 18.60        | 5.80                                              |
-| 10M          | 1 s      | 4.9                     | 37.50      | 140.52          | 12.00  | 192.11       | 140.35                                            |
-| 10M          | 5 s      | 20.3                    | 9.33       | 118.91          | 12.00  | 140.97       | 90.34                                             |
-| 10M          | 15 s     | 58.9                    | 3.58       | 114.30          | 12.00  | 130.33       | 80.90                                             |
-| 100M         | 1 s      | 39.6                    | 50.56      | 1,138.18        | 120.00 | 1,312.13     | 1,259.22                                          |
-| 100M         | 5 s      | 193.9                   | 14.48      | 1,110.16        | 120.00 | 1,246.27     | 1,194.82                                          |
-| 100M         | 15 s     | 500                     | 7.80       | 1,101.23        | 120.00 | 1,230.46     | 1,179.16                                          |
+| 1M           | 15 s     | 6.8                     | 2.70       | 14.42           | 1.20   | 18.61        | 5.80                                              |
+| 10M          | 1 s      | 4.9                     | 37.50      | 140.54          | 12.00  | 192.13       | 140.37                                            |
+| 10M          | 5 s      | 20.3                    | 9.33       | 118.94          | 12.00  | 141.00       | 90.37                                             |
+| 10M          | 15 s     | 58.9                    | 3.58       | 114.33          | 12.00  | 130.36       | 80.93                                             |
+| 100M         | 1 s      | 39.6                    | 50.56      | 1,138.41        | 120.00 | 1,312.36     | 1,259.45                                          |
+| 100M         | 5 s      | 193.9                   | 14.48      | 1,110.39        | 120.00 | 1,246.50     | 1,195.05                                          |
+| 100M         | 15 s     | 500                     | 7.80       | 1,101.47        | 120.00 | 1,230.70     | 1,179.40                                          |
 
 The "total" columns also include DO requests, DO rows read, Workers requests and the first month's
 R2 storage, each under 2 USD in every scenario (see the file). R2 storage is cumulative: the 1M/1 s

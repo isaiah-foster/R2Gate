@@ -158,13 +158,13 @@ const OBJECTS = 8;
 function label(e: Entry): string {
   switch (e.type) {
     case 'object.event':
-      return `${e.type} ${e.action} ${e.key}`;
+      return `${e.type} ${e.action} ${String(e.key)}`;
     case 'audit.finding':
-      return `${e.type} ${e.kind} ${e.key}`;
+      return `${e.type} ${e.kind} ${String(e.key)}`;
     case 'audit.scan':
       return `${e.type} ${e.phase}`;
     default:
-      return `${e.type} ${e.key}`;
+      return `${e.type} ${String(e.key)}`;
   }
 }
 

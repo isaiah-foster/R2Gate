@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   ProofError,
   consistencyProof,
+  inclusionProof,
   tileNodeReader,
   verifyConsistency,
+  verifyInclusion,
   type NodeCoord,
   type NodeReader,
 } from '../src/proof.ts';
@@ -12,6 +14,7 @@ import { EMPTY_TREE, extendTree, partialTiles, type TileCoord } from '../src/til
 import {
   hex,
   refConsistencyProof,
+  refInclusionProof,
   refLeafHash,
   refRootFromLeafHashes,
   syntheticLeafHashes,
@@ -81,6 +84,98 @@ describe('consistency proofs: RFC 6962 vectors', () => {
     const r2 = unhex(ROOTS[n] ?? '');
     await expect(verifyConsistency(m, n, r1, r2, proof)).resolves.toBeUndefined();
     await expect(verifyConsistency(m, n, r2, r1, proof)).rejects.toThrow(ProofError);
+  });
+});
+
+describe('inclusion proofs: RFC 6962 vectors', () => {
+  // PATH(m, D[n]) derived by hand from RFC 6962 §2.1.1; every hash is a node of the table above.
+  const vectors: [number, number, string[]][] = [
+    [0, 8, [NH.l0_1, NH.l1_1, NH.l2_1]],
+    [5, 8, [NH.l0_4, NH.l1_3, NH.l2_0]],
+    [4, 5, [NH.l2_0]],
+  ];
+
+  it.each(vectors)('PATH(%i, D[%i]) is generated and verifies', async (m, n, want) => {
+    const leaves = LEAF_INPUTS.slice(0, n).map((h) => refLeafHash(unhex(h)));
+    const proof = await inclusionProof(m, n, memoryReader(leaves));
+    expect(proof.map(hex)).toEqual(want);
+    const root = unhex(ROOTS[n] ?? '');
+    const leaf = leaves[m] ?? new Uint8Array();
+    await expect(verifyInclusion(m, n, leaf, proof, root)).resolves.toBeUndefined();
+    await expect(verifyInclusion(m, n, flipBit(leaf, 3), proof, root)).rejects.toThrow(ProofError);
+  });
+
+  it('a tree of one leaf needs no proof, and its root is the leaf hash', async () => {
+    const leaf = refLeafHash(unhex(LEAF_INPUTS[0] ?? ''));
+    expect(await inclusionProof(0, 1, memoryReader([leaf]))).toEqual([]);
+    await verifyInclusion(0, 1, leaf, [], unhex(ROOTS[1] ?? ''));
+  });
+});
+
+describe('inclusion proofs: properties against the reference', () => {
+  it('matches RFC 6962 PATH and verifies, for all 0 <= m < n', async () => {
+    const leaves = syntheticLeafHashes(600);
+    await fc.assert(
+      fc.asyncProperty(
+        fc
+          .integer({ min: 1, max: 600 })
+          .chain((n) => fc.tuple(fc.integer({ min: 0, max: n - 1 }), fc.constant(n))),
+        async ([m, n]) => {
+          const d = leaves.slice(0, n);
+          const proof = await inclusionProof(m, n, memoryReader(d));
+          expect(proof.map(hex)).toEqual(refInclusionProof(m, d).map(hex));
+          await verifyInclusion(m, n, d[m] ?? new Uint8Array(), proof, refRootFromLeafHashes(d));
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
+  // As for consistency proofs, the tree size is bound to the root by the checkpoint signature, so
+  // a size with the same proof shape is not mutated here. The index is: it decides which leaf the
+  // proof is about, and a proof must not verify for a leaf at another position.
+  it('rejects tampering with the proof, the leaf, the root or the index', async () => {
+    const leaves = syntheticLeafHashes(300);
+    await fc.assert(
+      fc.asyncProperty(
+        fc
+          .integer({ min: 2, max: 300 })
+          .chain((n) => fc.tuple(fc.integer({ min: 0, max: n - 1 }), fc.constant(n))),
+        fc.nat(),
+        async ([m, n], bit) => {
+          const d = leaves.slice(0, n);
+          const root = refRootFromLeafHashes(d);
+          const leaf = d[m] ?? new Uint8Array();
+          const proof = refInclusionProof(m, d);
+          const reject = (p: Promise<void>) => expect(p).rejects.toThrow(ProofError);
+
+          const which = bit % proof.length;
+          const flipped = proof.map((h, i) => (i === which ? flipBit(h, bit) : h));
+          await reject(verifyInclusion(m, n, leaf, flipped, root));
+          await reject(verifyInclusion(m, n, flipBit(leaf, bit), proof, root));
+          await reject(verifyInclusion(m, n, leaf, proof, flipBit(root, bit)));
+          await reject(verifyInclusion(m, n, leaf, proof.slice(0, -1), root));
+          await reject(verifyInclusion(m, n, leaf, [...proof, root], root));
+          // The same leaf hash claimed at another index (its proof would need other siblings).
+          await reject(verifyInclusion((m + 1 + (bit % (n - 1))) % n, n, leaf, proof, root));
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
+  it('rejects indexes outside the tree and malformed input', async () => {
+    const leaves = syntheticLeafHashes(5);
+    const r = refRootFromLeafHashes(leaves);
+    const leaf = leaves[0] ?? new Uint8Array();
+    const reject = (p: Promise<void>) => expect(p).rejects.toThrow(ProofError);
+    await reject(verifyInclusion(5, 5, leaf, refInclusionProof(4, leaves), r));
+    await reject(verifyInclusion(-1, 5, leaf, [], r));
+    await reject(verifyInclusion(0, 0, leaf, [], r));
+    await reject(verifyInclusion(0, 5, leaf.slice(1), refInclusionProof(0, leaves), r));
+    await reject(verifyInclusion(0, 2 ** 53, leaf, [], r));
+    await expect(inclusionProof(5, 5, memoryReader(leaves))).rejects.toThrow(RangeError);
+    await expect(inclusionProof(-1, 5, memoryReader(leaves))).rejects.toThrow(RangeError);
   });
 });
 
@@ -217,6 +312,21 @@ describe('tileNodeReader', () => {
       const proof = await consistencyProof(m, n, reader(n));
       expect(proof.map(hex)).toEqual(refConsistencyProof(m, leaves.slice(0, n)).map(hex));
     }
+  });
+
+  it('produces verifying inclusion proofs at tile boundaries of every published size', async () => {
+    await built;
+    for (const n of SIZES) {
+      const root = refRootFromLeafHashes(leaves.slice(0, n));
+      for (const m of [0, 1, 255, 256, 257, 65_535, 65_536, n - 2, n - 1].filter(
+        (i) => i >= 0 && i < n,
+      )) {
+        const proof = await inclusionProof(m, n, reader(n));
+        await verifyInclusion(m, n, leaves[m] ?? new Uint8Array(), proof, root);
+      }
+    }
+    const proof = await inclusionProof(65_536, 70_000, reader(70_000));
+    expect(proof.map(hex)).toEqual(refInclusionProof(65_536, leaves.slice(0, 70_000)).map(hex));
   });
 
   it('reads each tile at most once per reader', async () => {

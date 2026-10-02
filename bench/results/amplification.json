@@ -1,8 +1,8 @@
 {
   "benchmark": "PLAN §14.3 R2 and Durable Object operation amplification",
   "environment": {
-    "date": "2026-10-03T07:23:06.895Z",
-    "commit": "f35a560",
+    "date": "2026-10-03T10:56:52.239Z",
+    "commit": "75a0b24",
     "dirty": true,
     "os": "linux 7.2.5-4-omarchy",
     "cpu": "AMD Ryzen 5 3600 6-Core Processor",
@@ -35,8 +35,8 @@
         "r2Deletes": 0,
         "r2BytesWritten": 0,
         "r2BytesRetained": 0,
-        "rowsRead": 20492,
-        "rowsWritten": 17957,
+        "rowsRead": 20544,
+        "rowsWritten": 17964,
         "setAlarm": 2560
       },
       "publish": {
@@ -64,8 +64,8 @@
         "classB": 0,
         "r2BytesWritten": 38479.8227,
         "r2BytesRetained": 38258.2551,
-        "rowsRead": 159.3023,
-        "rowsWrittenBilled": 28.8145
+        "rowsRead": 159.3227,
+        "rowsWrittenBilled": 28.8172
       },
       "perPublication": {
         "classA": 4.0039,
@@ -76,16 +76,16 @@
         "r2BytesRetained": 38258.2551
       },
       "perQueueBatch": {
-        "rowsRead": 8.0047,
-        "rowsWritten": 7.0145,
+        "rowsRead": 8.025,
+        "rowsWritten": 7.0172,
         "setAlarm": 1
       },
       "perEntryPrune": {
         "rowsWritten": 1
       },
       "sqliteBytes": {
-        "beforePrune": 888832,
-        "afterPrune": 888832
+        "beforePrune": 905216,
+        "afterPrune": 905216
       }
     },
     {
@@ -100,8 +100,8 @@
         "r2Deletes": 0,
         "r2BytesWritten": 0,
         "r2BytesRetained": 0,
-        "rowsRead": 11532,
-        "rowsWritten": 14117,
+        "rowsRead": 11584,
+        "rowsWritten": 14124,
         "setAlarm": 1280
       },
       "publish": {
@@ -129,8 +129,8 @@
         "classB": 0,
         "r2BytesWritten": 19314.2562,
         "r2BytesRetained": 19203.4719,
-        "rowsRead": 81.4023,
-        "rowsWrittenBilled": 19.9145
+        "rowsRead": 81.4227,
+        "rowsWrittenBilled": 19.9172
       },
       "perPublication": {
         "classA": 4.0078,
@@ -141,16 +141,16 @@
         "r2BytesRetained": 38406.9437
       },
       "perQueueBatch": {
-        "rowsRead": 9.0094,
-        "rowsWritten": 11.0289,
+        "rowsRead": 9.05,
+        "rowsWritten": 11.0344,
         "setAlarm": 1
       },
       "perEntryPrune": {
         "rowsWritten": 1
       },
       "sqliteBytes": {
-        "beforePrune": 888832,
-        "afterPrune": 888832
+        "beforePrune": 905216,
+        "afterPrune": 905216
       }
     },
     {
@@ -165,8 +165,8 @@
         "r2Deletes": 0,
         "r2BytesWritten": 0,
         "r2BytesRetained": 0,
-        "rowsRead": 6156,
-        "rowsWritten": 11813,
+        "rowsRead": 6208,
+        "rowsWritten": 11820,
         "setAlarm": 512
       },
       "publish": {
@@ -194,8 +194,8 @@
         "classB": 0,
         "r2BytesWritten": 7933.3164,
         "r2BytesRetained": 7889.002,
-        "rowsRead": 35.0648,
-        "rowsWrittenBilled": 14.5738
+        "rowsRead": 35.0852,
+        "rowsWrittenBilled": 14.5766
       },
       "perPublication": {
         "classA": 4.0508,
@@ -206,16 +206,16 @@
         "r2BytesRetained": 39445.0098
       },
       "perQueueBatch": {
-        "rowsRead": 12.0234,
-        "rowsWritten": 23.0723,
+        "rowsRead": 12.125,
+        "rowsWritten": 23.0859,
         "setAlarm": 1
       },
       "perEntryPrune": {
         "rowsWritten": 1
       },
       "sqliteBytes": {
-        "beforePrune": 888832,
-        "afterPrune": 888832
+        "beforePrune": 905216,
+        "afterPrune": 905216
       }
     },
     {
@@ -230,8 +230,8 @@
         "r2Deletes": 0,
         "r2BytesWritten": 0,
         "r2BytesRetained": 0,
-        "rowsRead": 4364,
-        "rowsWritten": 11045,
+        "rowsRead": 4416,
+        "rowsWritten": 11052,
         "setAlarm": 256
       },
       "publish": {
@@ -259,8 +259,8 @@
         "classB": 0,
         "r2BytesWritten": 4100.2031,
         "r2BytesRetained": 4078.0453,
-        "rowsRead": 19.4852,
-        "rowsWrittenBilled": 12.7941
+        "rowsRead": 19.5055,
+        "rowsWrittenBilled": 12.7969
       },
       "perPublication": {
         "classA": 4.1016,
@@ -271,16 +271,16 @@
         "r2BytesRetained": 40780.4531
       },
       "perQueueBatch": {
-        "rowsRead": 17.0469,
-        "rowsWritten": 43.1445,
+        "rowsRead": 17.25,
+        "rowsWritten": 43.1719,
         "setAlarm": 1
       },
       "perEntryPrune": {
         "rowsWritten": 1
       },
       "sqliteBytes": {
-        "beforePrune": 888832,
-        "afterPrune": 888832
+        "beforePrune": 905216,
+        "afterPrune": 905216
       }
     },
     {
@@ -295,8 +295,8 @@
         "r2Deletes": 0,
         "r2BytesWritten": 0,
         "r2BytesRetained": 0,
-        "rowsRead": 3468,
-        "rowsWritten": 10661,
+        "rowsRead": 3520,
+        "rowsWritten": 10668,
         "setAlarm": 128
       },
       "publish": {
@@ -324,8 +324,8 @@
         "classB": 0,
         "r2BytesWritten": 2183.6461,
         "r2BytesRetained": 2172.5668,
-        "rowsRead": 11.6953,
-        "rowsWrittenBilled": 11.9043
+        "rowsRead": 11.7156,
+        "rowsWrittenBilled": 11.907
       },
       "perPublication": {
         "classA": 4.2031,
@@ -336,16 +336,16 @@
         "r2BytesRetained": 43451.3359
       },
       "perQueueBatch": {
-        "rowsRead": 27.0938,
-        "rowsWritten": 83.2891,
+        "rowsRead": 27.5,
+        "rowsWritten": 83.3438,
         "setAlarm": 1
       },
       "perEntryPrune": {
         "rowsWritten": 1
       },
       "sqliteBytes": {
-        "beforePrune": 888832,
-        "afterPrune": 888832
+        "beforePrune": 905216,
+        "afterPrune": 905216
       }
     },
     {
@@ -360,8 +360,8 @@
         "r2Deletes": 0,
         "r2BytesWritten": 0,
         "r2BytesRetained": 0,
-        "rowsRead": 2976,
-        "rowsWritten": 10593,
+        "rowsRead": 3028,
+        "rowsWritten": 10600,
         "setAlarm": 52
       },
       "publish": {
@@ -389,8 +389,8 @@
         "classB": 0,
         "r2BytesWritten": 1062.8462,
         "r2BytesRetained": 1058.4138,
-        "rowsRead": 7.1046,
-        "rowsWrittenBilled": 11.3542
+        "rowsRead": 7.1246,
+        "rowsWrittenBilled": 11.3569
       },
       "perPublication": {
         "classA": 4.5769,
@@ -401,16 +401,16 @@
         "r2BytesRetained": 52920.6923
       },
       "perQueueBatch": {
-        "rowsRead": 57.2308,
-        "rowsWritten": 203.7115,
+        "rowsRead": 58.2308,
+        "rowsWritten": 203.8462,
         "setAlarm": 1
       },
       "perEntryPrune": {
         "rowsWritten": 1
       },
       "sqliteBytes": {
-        "beforePrune": 917504,
-        "afterPrune": 917504
+        "beforePrune": 933888,
+        "afterPrune": 933888
       }
     },
     {
@@ -425,8 +425,8 @@
         "r2Deletes": 0,
         "r2BytesWritten": 0,
         "r2BytesRetained": 0,
-        "rowsRead": 2794,
-        "rowsWritten": 10515,
+        "rowsRead": 2846,
+        "rowsWritten": 10522,
         "setAlarm": 26
       },
       "publish": {
@@ -454,8 +454,8 @@
         "classB": 0,
         "r2BytesWritten": 678.6238,
         "r2BytesRetained": 676.4073,
-        "rowsRead": 5.5438,
-        "rowsWrittenBilled": 11.1765
+        "rowsRead": 5.5638,
+        "rowsWrittenBilled": 11.1792
       },
       "perPublication": {
         "classA": 5.1538,
@@ -466,16 +466,16 @@
         "r2BytesRetained": 67640.7308
       },
       "perQueueBatch": {
-        "rowsRead": 107.4615,
-        "rowsWritten": 404.4231,
+        "rowsRead": 109.4615,
+        "rowsWritten": 404.6923,
         "setAlarm": 1
       },
       "perEntryPrune": {
         "rowsWritten": 1
       },
       "sqliteBytes": {
-        "beforePrune": 917504,
-        "afterPrune": 917504
+        "beforePrune": 933888,
+        "afterPrune": 933888
       }
     },
     {
@@ -490,8 +490,8 @@
         "r2Deletes": 0,
         "r2BytesWritten": 0,
         "r2BytesRetained": 0,
-        "rowsRead": 2792,
-        "rowsWritten": 10515,
+        "rowsRead": 2844,
+        "rowsWritten": 10522,
         "setAlarm": 13
       },
       "publish": {
@@ -519,8 +519,8 @@
         "classB": 0,
         "r2BytesWritten": 471.94,
         "r2BytesRetained": 470.8315,
-        "rowsRead": 4.7481,
-        "rowsWrittenBilled": 11.1023
+        "rowsRead": 4.7681,
+        "rowsWrittenBilled": 11.105
       },
       "perPublication": {
         "classA": 6.3077,
@@ -531,16 +531,16 @@
         "r2BytesRetained": 94166.3077
       },
       "perQueueBatch": {
-        "rowsRead": 107.3846,
-        "rowsWritten": 404.4231,
+        "rowsRead": 109.3846,
+        "rowsWritten": 404.6923,
         "setAlarm": 0.5
       },
       "perEntryPrune": {
         "rowsWritten": 1
       },
       "sqliteBytes": {
-        "beforePrune": 917504,
-        "afterPrune": 917504
+        "beforePrune": 933888,
+        "afterPrune": 933888
       }
     },
     {
@@ -555,8 +555,8 @@
         "r2Deletes": 0,
         "r2BytesWritten": 0,
         "r2BytesRetained": 0,
-        "rowsRead": 3214,
-        "rowsWritten": 12127,
+        "rowsRead": 3266,
+        "rowsWritten": 12134,
         "setAlarm": 12
       },
       "publish": {
@@ -584,8 +584,8 @@
         "classB": 0,
         "r2BytesWritten": 405.8047,
         "r2BytesRetained": 405.361,
-        "rowsRead": 4.4193,
-        "rowsWrittenBilled": 11.0123
+        "rowsRead": 4.4367,
+        "rowsWrittenBilled": 11.0147
       },
       "perPublication": {
         "classA": 8.6667,
@@ -596,16 +596,16 @@
         "r2BytesRetained": 202680.5
       },
       "perQueueBatch": {
-        "rowsRead": 107.1333,
-        "rowsWritten": 404.2333,
+        "rowsRead": 108.8667,
+        "rowsWritten": 404.4667,
         "setAlarm": 0.4
       },
       "perEntryPrune": {
         "rowsWritten": 1
       },
       "sqliteBytes": {
-        "beforePrune": 1089536,
-        "afterPrune": 1089536
+        "beforePrune": 1105920,
+        "afterPrune": 1105920
       }
     }
   ]

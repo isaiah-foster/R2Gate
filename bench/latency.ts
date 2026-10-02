@@ -120,7 +120,7 @@ try {
       if (!res.ok) throw new Error(`bundle ${String(n)}: HTTP ${String(res.status)}`);
       decodeBundle(new Uint8Array(await res.arrayBuffer())).forEach((e, j) => {
         const d = decodeEntry(e);
-        if (d.known && d.entry.type === 'object.event')
+        if (d.known && d.entry.type === 'object.event' && d.entry.key !== undefined)
           indexOf.set(d.entry.key, n * TILE_WIDTH + j);
       });
     }

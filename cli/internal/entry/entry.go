@@ -17,7 +17,10 @@ type Info struct {
 	Type   string
 	Key    string
 	HasKey bool
-	Action string
+	// KeyHmac names the object on a blinded log (M8) instead of Key.
+	KeyHmac    string
+	HasKeyHmac bool
+	Action     string
 	// Auditor fields (audit.finding, audit.scan).
 	ScanID      string
 	Phase       string
@@ -46,6 +49,7 @@ func Parse(b []byte) Info {
 		info.Type, info.Valid = str("type")
 	}
 	info.Key, info.HasKey = str("key")
+	info.KeyHmac, info.HasKeyHmac = str("keyHmac")
 	info.Action, _ = str("action")
 	info.ScanID, _ = str("scanId")
 	info.Phase, _ = str("phase")

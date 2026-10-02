@@ -28,6 +28,7 @@ function row(key: string, o: Partial<ObjectState> = {}): ObjectState {
     etag: 'e1',
     size: 10,
     eventTime: iso(T0),
+    keyHmac: null,
     seq: 7,
     deleted: false,
     ...o,

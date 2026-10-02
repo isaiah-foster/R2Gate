@@ -219,13 +219,22 @@ describe('objects view and key index', () => {
     await s.publish();
 
     expect(await s.getObjectStates({ limit: 10 })).toEqual([
-      { key: 'a', etag: 'a2', size: 1, eventTime: at('03'), seq: 1, deleted: false },
-      { key: 'b', etag: null, size: null, eventTime: at('05'), seq: 4, deleted: true },
+      { key: 'a', etag: 'a2', size: 1, eventTime: at('03'), keyHmac: null, seq: 1, deleted: false },
+      {
+        key: 'b',
+        etag: null,
+        size: null,
+        eventTime: at('05'),
+        keyHmac: null,
+        seq: 4,
+        deleted: true,
+      },
       {
         key: 'c',
         etag: 'c2',
         size: 6,
         eventTime: '2026-10-02T13:00:07+01:00',
+        keyHmac: null,
         seq: 6,
         deleted: false,
       },
@@ -283,8 +292,16 @@ describe('objects view and key index', () => {
   });
 });
 
+/** Removes what schema v4 (M8) added, as a database written by M6-M7 would look. */
+function rollBackV4(sql: SqlStorage): void {
+  sql.exec('DROP TABLE witnesses');
+  sql.exec('ALTER TABLE entries DROP COLUMN object_key');
+  sql.exec('ALTER TABLE objects DROP COLUMN key_hmac');
+}
+
 /** Removes what schema v3 (M6) added, as a database written by M3-M5 would look. */
 function rollBackV3(sql: SqlStorage): void {
+  rollBackV4(sql);
   for (const t of ['scrub_state', 'scans', 'scan_candidates', 'scan_findings']) {
     sql.exec(`DROP TABLE ${t}`);
   }
@@ -302,6 +319,22 @@ describe('store internals', () => {
         state.storage.sql.exec('SELECT v FROM meta WHERE k = ?', 'schema_version').one().v,
       ).toBe(SCHEMA_VERSION);
     });
+  });
+
+  it('upgrades a v3 database to v4 (witness state) and keeps publishing', async () => {
+    const s = stub();
+    await s.append(items(3));
+    await s.publish();
+    await runInDurableObject(s, (_, state) => {
+      rollBackV4(state.storage.sql);
+      state.storage.sql.exec("UPDATE meta SET v = 3 WHERE k = 'schema_version'");
+      const store = new SequencerStore(state.storage);
+      store.migrate();
+      expect(store.publishedSize()).toBe(3);
+      expect(store.witnessStatus('w+00000000+AA==')).toMatchObject({ size: null, lastError: null });
+    });
+    await s.append(items(2, 3));
+    expect((await s.publish()).size).toBe(5);
   });
 
   it('upgrades a v1 database to v2 (counters) without touching its entries', async () => {

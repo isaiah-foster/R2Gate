@@ -321,6 +321,7 @@ describe('I6: a crash between any two publication steps recovers byte-identicall
     'immutable-written',
     'partials-written',
     'archive-written',
+    'witnessed',
     'checkpoint-written',
     'committed',
   ];

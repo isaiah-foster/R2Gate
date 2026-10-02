@@ -6,8 +6,9 @@ approves them (PLAN §0, working agreement 4). Flags were checked against `wrang
 `--help` and the Cloudflare docs on 2026-10-02/03. Bucket, queue and host names are the committed
 placeholders; use your own and keep them out of commits.
 
-Order for a first deployment: §1 resources → §2 contract tests → §3 secrets → §4 deploy → §5
-backfill and first audit. §8 and §9 are for later.
+Order for a first deployment: §1 resources → §2 contract tests → §3 secrets (decide on key
+blinding here, §12: it cannot change once the log has entries) → §4 deploy → §5 backfill and first
+audit. Witnesses (§11) can be added at any time. §8 and §9 are for later.
 
 ## Which plan
 
@@ -81,6 +82,8 @@ Generate them locally, then put each one. The values never go in the repository.
    `npx wrangler secret put <NAME> -c worker/wrangler.jsonc` and paste the value.
    `READ_TOKEN` is only used when `PUBLIC_LOG` is `"false"` (the committed default).
    Optional: `ALERT_WEBHOOK_URL` (https only; receives counts and log indexes, never key names).
+   Key blinding (§12): generate with `--blind`, set `KEY_BLINDING` to `"true"` in
+   `worker/wrangler.jsonc`, and put `KEY_BLINDING_KEY` before the first deploy.
 3. Publish the vkey (the comment line in the file) wherever clients will find it, then delete the
    file or move it to a password manager.
 
@@ -205,6 +208,9 @@ is a set of plain files; any tlog-tiles client can read a copy).
    `npx wrangler r2 bucket delete example-log-bucket`. The monitored bucket is yours; R2Notary never
    writes to it.
 8. Secrets go with the Worker. Revoke any R2 API tokens created for §6.
+9. A witness deployed for this log (§11) is its operator's to remove:
+   `npx wrangler delete -c witness/wrangler.jsonc`, after a tombstone for its `WitnessState` class
+   as in step 3. Its record of the log is evidence; keep a copy of `GET /<sha256(origin)>/checkpoint`.
 
 ## 10. Cost notes
 
@@ -221,3 +227,48 @@ Three things drive it:
 
 Not estimated: Durable Object duration, Workers CPU, Workflow steps, and reads by verifiers (Class
 B, or nothing with Workers Cache on a public log). Check current prices before relying on any of it.
+
+## 11. Witnesses (M8)
+
+A witness is worth something only if someone other than the log's operator runs it (`docs/DESIGN.md`
+§7). Either point the log at existing C2SP tlog-witness instances that accept it, or have another
+party deploy `witness/`:
+
+1. The witness operator: `npm run keygen -- --witness <witness name> --out witness.secrets`, then
+   `npx wrangler secret put WITNESS_KEY -c witness/wrangler.jsonc`.
+2. Set `WITNESS_LOGS` in `witness/wrangler.jsonc` to the log's origin and its vkey:
+   `[{"origin": "r2notary.example.com/log/example-log", "vkeys": ["<log vkey>"]}]`.
+3. `npx wrangler deploy -c witness/wrangler.jsonc`. It serves `POST /add-checkpoint` and
+   `GET /<sha256(origin)>/checkpoint` at the root of its URL. Not run yet.
+4. The log operator adds the witness to `WITNESSES` in `worker/wrangler.jsonc`
+   (`[{"vkey": "<witness cosigner vkey>", "url": "https://<witness host>"}]`), chooses
+   `WITNESS_QUORUM`, and deploys. With a quorum, a witness outage stops new checkpoints (entries stay
+   durable; `/api/v1/status` shows each witness's last error), so start with `"0"` (best effort) and
+   raise it once the witness has been reliable.
+5. Readers add `--witness <witness vkey>` to the CLI, or the witness key in the browser verifier.
+
+Cost: one HTTPS request per witness per checkpoint, plus the R2 tile reads for its consistency
+proof (a few Class B reads; not benchmarked).
+
+## 12. Key blinding (M8)
+
+Decide before the log's first entry: the Sequencer records whether the log is blinded, and with
+which secret, and refuses any change afterwards (DECISIONS D8.8). With `KEY_BLINDING="true"`:
+
+- Entries, reports and lookups name objects by HMAC-SHA256 of the key. The lookup API takes
+  `keyHmac=`; `key=` is refused.
+- Give `KEY_BLINDING_KEY` to readers who should be able to find objects by name (CLI:
+  `$R2NOTARY_BLINDING_KEY` or `--blinding-key-file`; the browser verifier: its own field). Anyone
+  holding it can test guessed key names, so treat it like a read token.
+- Rotating it means a new log. Losing it makes key lookups impossible but the log still verifies.
+- `monitor --watch` cannot match a prefix of HMACs and refuses blinded logs.
+- The dev simulator's direct-append route (`/__simulate/append`) writes plaintext keys and is
+  refused by a blinded log; the event route works.
+
+## 13. The browser verifier (M8)
+
+`wrangler deploy` builds the dashboard (`build.command`) and uploads `dashboard/public/` as static
+assets, served at `/` without running the Worker; `/log/*` and `/api/*` always reach the Worker. It
+needs nothing else. The page is public (it contains no data); the read token stays in the visitor's
+tab. To verify without trusting the deployment for the page itself, save the page and open the copy
+locally: the log and read API allow cross-origin reads.

@@ -5,7 +5,9 @@
 // evidence of a writer bug or of tampering. Unknown types (or versions) are reported as unknown
 // rather than rejected, so the schema can grow without breaking old readers.
 //
-// The audit.* shapes were settled with the auditor in M6 (DECISIONS D6.6).
+// The audit.* shapes were settled with the auditor in M6 (DECISIONS D6.6). Key blinding (M8)
+// lets every entry name its object by `keyHmac` (blinding.ts) instead of `key`; an entry uses one
+// form throughout, copy source included.
 
 import { MAX_ENTRY_SIZE } from './bundle.ts';
 import {
@@ -41,12 +43,19 @@ export const FINDING_KINDS = [
 ] as const;
 export type FindingKind = (typeof FINDING_KINDS)[number];
 
+/**
+ * How an entry names an object: its key, or on a blinded log (M8) the key's HMAC under the log's
+ * secret, as 64 lowercase hex digits.
+ */
+export type ObjectName =
+  | { readonly key: string; readonly keyHmac?: never }
+  | { readonly keyHmac: string; readonly key?: never };
+
 /** An R2 event notification, as ingested. `account` is deliberately not logged. */
-export interface ObjectEvent {
+export type ObjectEvent = ObjectName & {
   readonly v: 1;
   readonly type: 'object.event';
   readonly bucket: string;
-  readonly key: string;
   readonly action: ObjectAction;
   /** Absent on delete events (R2 does not send it). */
   readonly size?: number;
@@ -57,20 +66,19 @@ export interface ObjectEvent {
   /** RFC 3339, from the Worker clock when the event was ingested. */
   readonly ingestedAt: string;
   /** CopyObject only. R2 sends this as `{bucket, object}`; it is logged as `{bucket, key}`. */
-  readonly copySource?: { readonly bucket: string; readonly key: string };
-}
+  readonly copySource?: ObjectName & { readonly bucket: string };
+};
 
 /** Baseline state of a pre-existing object, recorded by backfill. */
-export interface ObjectSnapshot {
+export type ObjectSnapshot = ObjectName & {
   readonly v: 1;
   readonly type: 'object.snapshot';
   readonly bucket: string;
-  readonly key: string;
   readonly size: number;
   readonly etag: string;
   readonly uploaded: string;
   readonly snapshotId: string;
-}
+};
 
 export interface ObservedState {
   readonly etag: string;
@@ -93,19 +101,18 @@ export interface ExpectedState {
   readonly sha256?: string;
 }
 
-export interface AuditFinding {
+export type AuditFinding = ObjectName & {
   readonly v: 1;
   readonly type: 'audit.finding';
   readonly kind: FindingKind;
   readonly bucket: string;
-  readonly key: string;
   readonly observed?: ObservedState;
   readonly expected?: ExpectedState;
   readonly scanId: string;
   readonly observedAt: string;
   /** The grace window in force when the finding was made (PLAN §5.6). */
   readonly graceSeconds: number;
-}
+};
 
 export interface AuditScan {
   readonly v: 1;
@@ -117,18 +124,17 @@ export interface AuditScan {
   readonly logSizeAtStart?: number;
 }
 
-export interface AuditObservation {
+export type AuditObservation = ObjectName & {
   readonly v: 1;
   readonly type: 'audit.observation';
   readonly bucket: string;
-  readonly key: string;
   readonly etag: string;
   readonly size: number;
   /** Lowercase hex SHA-256 of the object body. */
   readonly sha256: string;
   readonly scanId: string;
   readonly observedAt: string;
-}
+};
 
 export type Entry = ObjectEvent | ObjectSnapshot | AuditFinding | AuditScan | AuditObservation;
 export type EntryType = Entry['type'];
@@ -192,6 +198,7 @@ const uint: Check = (v, path) => {
 const id = pattern(/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/, 'an identifier of [A-Za-z0-9._-]');
 
 const sha256Hex = pattern(/^[0-9a-f]{64}$/, '64 lowercase hex digits');
+const keyHmac = pattern(/^[0-9a-f]{64}$/, 'an HMAC-SHA256 as 64 lowercase hex digits');
 
 const RFC3339 =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/;
@@ -222,6 +229,15 @@ interface Field {
 
 const req = (check: Check): Field => ({ check });
 const opt = (check: Check): Field => ({ check, optional: true });
+
+/** The object-naming fields: one of `key` and `keyHmac` must be present (checked by `named`). */
+const NAME_FIELDS = { key: opt(objectKey), keyHmac: opt(keyHmac) };
+
+/** Checks that `o` names its object one way, and returns which (true: blinded). */
+function named(o: Record<string, unknown>, path: string): boolean {
+  if ('key' in o === 'keyHmac' in o) fail(path, 'needs exactly one of key and keyHmac');
+  return 'keyHmac' in o;
+}
 
 function record(v: unknown, path: string): Record<string, unknown> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) fail(path, 'must be an object');
@@ -279,14 +295,21 @@ const validators: Readonly<Record<EntryType, (v: unknown) => void>> = {
     const o = shape(v, 'entry', {
       ...header('object.event'),
       bucket: req(bucketName),
-      key: req(objectKey),
+      ...NAME_FIELDS,
       action: req(oneOf(OBJECT_ACTIONS)),
       size: opt(uint),
       etag: opt(etag),
       eventTime: req(timestamp),
       ingestedAt: req(timestamp),
-      copySource: opt(nested({ bucket: req(bucketName), key: req(objectKey) })),
+      copySource: opt(nested({ bucket: req(bucketName), ...NAME_FIELDS })),
     });
+    const blinded = named(o, 'entry');
+    if ('copySource' in o) {
+      const src = o.copySource as Record<string, unknown>;
+      if (named(src, 'entry.copySource') !== blinded) {
+        fail('entry.copySource', 'must name its object the same way as the entry');
+      }
+    }
     const action = o.action as ObjectAction;
     if (DELETE_ACTIONS.includes(action) && ('size' in o || 'etag' in o)) {
       fail('entry', `${action} events carry no size or etag`);
@@ -296,28 +319,30 @@ const validators: Readonly<Record<EntryType, (v: unknown) => void>> = {
     }
   },
   'object.snapshot': (v) => {
-    shape(v, 'entry', {
+    const o = shape(v, 'entry', {
       ...header('object.snapshot'),
       bucket: req(bucketName),
-      key: req(objectKey),
+      ...NAME_FIELDS,
       size: req(uint),
       etag: req(etag),
       uploaded: req(timestamp),
       snapshotId: req(id),
     });
+    named(o, 'entry');
   },
   'audit.finding': (v) => {
     const o = shape(v, 'entry', {
       ...header('audit.finding'),
       kind: req(oneOf(FINDING_KINDS)),
       bucket: req(bucketName),
-      key: req(objectKey),
+      ...NAME_FIELDS,
       observed: opt(observedState),
       expected: opt(expectedState),
       scanId: req(id),
       observedAt: req(timestamp),
       graceSeconds: req(uint),
     });
+    named(o, 'entry');
     const kind = o.kind as FindingKind;
     const wantObserved = kind !== 'MISSING_OBJECT';
     const wantExpected = kind !== 'UNLOGGED_OBJECT';
@@ -356,16 +381,17 @@ const validators: Readonly<Record<EntryType, (v: unknown) => void>> = {
     }
   },
   'audit.observation': (v) => {
-    shape(v, 'entry', {
+    const o = shape(v, 'entry', {
       ...header('audit.observation'),
       bucket: req(bucketName),
-      key: req(objectKey),
+      ...NAME_FIELDS,
       etag: req(etag),
       size: req(uint),
       sha256: req(sha256Hex),
       scanId: req(id),
       observedAt: req(timestamp),
     });
+    named(o, 'entry');
   },
 };
 
@@ -421,4 +447,12 @@ export function decodeEntry(bytes: Uint8Array): DecodedEntry {
   if (v !== ENTRY_SCHEMA_VERSION || !isEntryType(type)) return { known: false, type, v };
   validateEntry(o);
   return { known: true, entry: o };
+}
+
+/** How an entry names its object in the log: `key`, or `keyHmac` on a blinded log; null if none. */
+export function loggedName(e: Entry): { readonly blinded: boolean; readonly name: string } | null {
+  if (e.type === 'audit.scan') return null;
+  return e.keyHmac === undefined
+    ? { blinded: false, name: e.key }
+    : { blinded: true, name: e.keyHmac };
 }

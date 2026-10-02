@@ -1,0 +1,26 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  // A C2SP tlog-witness (M8): verifies that each checkpoint a log submits is consistent with the
+  // last one it cosigned for that log, then cosigns it. Deploy it separately from r2notary, and
+  // preferably under a different account or operator: a witness run by the log's own operator
+  // cannot catch that operator showing different logs to different readers (docs/DESIGN.md).
+  "name": "r2notary-witness",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-02",
+
+  // WITNESS_KEY: an Ed25519 cosigner key (`npm run keygen -- --witness <name>`); never committed.
+  "secrets": { "required": ["WITNESS_KEY"] },
+
+  "exports": {
+    "WitnessState": { "type": "durable-object", "storage": "sqlite" },
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "WITNESS", "class_name": "WitnessState" }],
+  },
+
+  "vars": {
+    // The logs this witness cosigns: a JSON array of {"origin": "<checkpoint origin>",
+    // "vkeys": ["<log verifier key>", ...]}. Empty here (placeholders only); set it per deployment.
+    "WITNESS_LOGS": "[]",
+  },
+}

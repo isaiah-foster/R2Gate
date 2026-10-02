@@ -42,10 +42,10 @@ describe('GET /api/v1/status', () => {
     expect(await json(res)).toMatchObject({ log: LOG, origin: env.LOG_ORIGIN, size: 0 });
   });
 
-  it('only answers GET and HEAD', async () => {
+  it('only answers GET and HEAD (and CORS preflights)', async () => {
     const res = await call('/api/v1/status', { method: 'POST' });
     expect(res.status).toBe(405);
-    expect(res.headers.get('allow')).toBe('GET, HEAD');
+    expect(res.headers.get('allow')).toBe('GET, HEAD, OPTIONS');
   });
 });
 
@@ -239,5 +239,39 @@ describe('admin routes', () => {
       expect(res.status, op).toBe(409);
       expect(await json(res)).toMatchObject({ active: { scanId: 'busy-1', state: 'listing' } });
     }
+  });
+});
+
+describe('CORS on the read API (M8: a browser verifier on another origin)', () => {
+  it('lets any origin read status, lookup and findings, with a token on a private log', async () => {
+    for (const route of ['status', 'lookup?key=a', 'findings']) {
+      const ok = await call(`/api/v1/${route}`, { env, token: env.READ_TOKEN });
+      expect(ok.headers.get('access-control-allow-origin'), route).toBe('*');
+      await ok.body?.cancel();
+      const denied = await call(`/api/v1/${route}`, { env });
+      expect(denied.status).toBe(401);
+      expect(denied.headers.get('access-control-allow-origin'), route).toBe('*');
+    }
+  });
+
+  it('answers preflights for read routes without a token', async () => {
+    const res = await call('/api/v1/lookup', { method: 'OPTIONS', env });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('access-control-allow-headers')).toBe('Authorization');
+    expect(res.headers.get('access-control-allow-methods')).toBe('GET, HEAD, OPTIONS');
+  });
+
+  it('gives admin routes no CORS, so a browser on another origin cannot call them', async () => {
+    const res = await call('/api/v1/admin/publish', {
+      method: 'POST',
+      env,
+      token: env.ADMIN_TOKEN,
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    const pre = await call('/api/v1/admin/publish', { method: 'OPTIONS', env });
+    expect(pre.status).toBe(401);
+    expect(pre.headers.get('access-control-allow-origin')).toBeNull();
   });
 });

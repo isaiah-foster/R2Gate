@@ -25,6 +25,9 @@ type Log struct {
 	VKey   string
 	SKey   string
 	signer note.Signer
+	// Cosigners, if set, add witness cosignatures to the live checkpoint (archives keep the log's
+	// signature only, as the TypeScript writer does).
+	Cosigners []note.Signer
 
 	mu       sync.Mutex
 	entries  [][]byte
@@ -116,21 +119,21 @@ func (l *Log) Append(t testing.TB, entries ...[]byte) []byte {
 			l.files[tlogTilesPath(bundle)] = b
 		}
 	}
-	cp := l.sign(t, size)
-	l.files["x-checkpoints/"+strconv.FormatInt(size, 10)] = cp
+	l.files["x-checkpoints/"+strconv.FormatInt(size, 10)] = l.sign(t, size)
+	cp := l.sign(t, size, l.Cosigners...)
 	l.files["checkpoint"] = cp
 	l.archives = append(l.archives, size)
 	return cp
 }
 
-func (l *Log) sign(t testing.TB, size int64) []byte {
+func (l *Log) sign(t testing.TB, size int64, cosigners ...note.Signer) []byte {
 	t.Helper()
 	root, err := tlog.TreeHash(size, tlog.HashReaderFunc(l.readHashes))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := fmt.Sprintf("%s\n%d\n%s\n", l.Origin, size, base64.StdEncoding.EncodeToString(root[:]))
-	msg, err := note.Sign(&note.Note{Text: text}, l.signer)
+	msg, err := note.Sign(&note.Note{Text: text}, append([]note.Signer{l.signer}, cosigners...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

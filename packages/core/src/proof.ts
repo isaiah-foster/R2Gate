@@ -1,8 +1,10 @@
-// RFC 6962 / RFC 9162 consistency proofs, generated from any source of subtree hashes (in
-// particular from tlog-tiles) and verified with the RFC 9162 §2.1.4.2 algorithm.
+// RFC 6962 / RFC 9162 inclusion and consistency proofs, generated from any source of subtree
+// hashes (in particular from tlog-tiles) and verified with the RFC 9162 §2.1.3.2 and §2.1.4.2
+// algorithms.
 //
-// The writer uses these to check its own output (I3: any two archived checkpoints are consistent).
-// The Go verifier (M5) has its own implementation and shares nothing with this file.
+// The writer uses these to check its own output (I3: any two archived checkpoints are consistent),
+// to send witnesses consistency proofs, and the browser verifier (dashboard/) uses them to check a
+// log it does not trust. The Go verifier (M5) has its own implementation and shares nothing here.
 
 import { bytesEqual } from './bytes.ts';
 import {
@@ -120,6 +122,49 @@ export async function consistencyProof(
   );
 }
 
+/**
+ * RFC 6962 §2.1.1 PATH(m, D[n]), as the list of leaf ranges whose MTH forms the audit path: at
+ * each split the sibling range is recorded, and deeper siblings come first in the proof.
+ */
+function inclusionRanges(m: number, n: number): Range[] {
+  const out: Range[] = [];
+  let lo = 0;
+  let hi = n;
+  while (hi - lo > 1) {
+    const k = splitPoint(hi - lo);
+    if (m < lo + k) {
+      out.push({ lo: lo + k, hi });
+      hi = lo + k;
+    } else {
+      out.push({ lo, hi: lo + k });
+      lo += k;
+    }
+  }
+  return out.reverse();
+}
+
+/** Inclusion proof (audit path) for leaf `index` in the tree of `size` leaves. */
+export async function inclusionProof(
+  index: number,
+  size: number,
+  read: NodeReader,
+): Promise<Uint8Array[]> {
+  checkSize(size, 'tree size');
+  if (!Number.isSafeInteger(index) || index < 0 || index >= size) {
+    throw new RangeError(`index ${String(index)} is outside a tree of ${String(size)}`);
+  }
+  const ranges = inclusionRanges(index, size).map(rangeNodes);
+  const hashes = await read(ranges.flat());
+  let off = 0;
+  return Promise.all(
+    ranges.map((nodes) => {
+      const part = hashes.slice(off, off + nodes.length);
+      off += nodes.length;
+      return rootFromFrontier(part);
+    }),
+  );
+}
+
 const isOdd = (n: number): boolean => n % 2 === 1;
 const half = (n: number): number => Math.floor(n / 2);
 
@@ -193,6 +238,47 @@ export async function verifyConsistency(
   if (sn !== 0) throw new ProofError('consistency proof is too short');
   if (!bytesEqual(fr, root1)) throw new ProofError('consistency proof does not match root1');
   if (!bytesEqual(sr, root2)) throw new ProofError('consistency proof does not match root2');
+}
+
+/**
+ * Verifies that `leafHash` is the leaf at `index` in the tree of `size` leaves with root `root`
+ * (RFC 9162 §2.1.3.2). Throws ProofError if not. Arithmetic instead of bit operations, as above.
+ */
+export async function verifyInclusion(
+  index: number,
+  size: number,
+  leafHash: Uint8Array,
+  proof: readonly Uint8Array[],
+  root: Uint8Array,
+): Promise<void> {
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(size) || index < 0) {
+    throw new ProofError('invalid index or tree size');
+  }
+  if (index >= size) throw new ProofError('index is outside the tree');
+  if (leafHash.length !== HASH_SIZE || root.length !== HASH_SIZE) {
+    throw new ProofError('leaf and root hashes must be 32 bytes');
+  }
+  if (proof.some((h) => h.length !== HASH_SIZE))
+    throw new ProofError('proof hashes must be 32 bytes');
+  let fn = index;
+  let sn = size - 1;
+  let r = leafHash;
+  for (const p of proof) {
+    if (sn === 0) throw new ProofError('inclusion proof is too long');
+    if (isOdd(fn) || fn === sn) {
+      r = await hashChildren(p, r);
+      while (!isOdd(fn) && fn !== 0) {
+        fn = half(fn);
+        sn = half(sn);
+      }
+    } else {
+      r = await hashChildren(r, p);
+    }
+    fn = half(fn);
+    sn = half(sn);
+  }
+  if (sn !== 0) throw new ProofError('inclusion proof is too short');
+  if (!bytesEqual(r, root)) throw new ProofError('inclusion proof does not match the root');
 }
 
 /**

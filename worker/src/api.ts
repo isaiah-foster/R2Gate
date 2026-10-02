@@ -68,6 +68,7 @@ export async function status(deps: ApiDeps, head: boolean): Promise<Response> {
     {
       log: deps.config.logName,
       origin: deps.config.logOrigin,
+      keyBlinding: deps.config.keyBlinding,
       size: s.publishedSize,
       durableSize: s.durableSize,
       pending: s.pending,
@@ -83,6 +84,17 @@ export async function status(deps: ApiDeps, head: boolean): Promise<Response> {
       },
       audit: scanView(s.audit),
       backfill: scanView(s.backfill),
+      witnesses: {
+        quorum: s.witnesses.quorum,
+        witnesses: s.witnesses.witnesses.map((w) => ({
+          vkey: w.vkey,
+          url: w.url,
+          size: w.size,
+          cosignedAt: iso(w.cosignedAt),
+          failedAt: iso(w.failedAt),
+          lastError: w.lastError,
+        })),
+      },
     },
     head,
   );
@@ -97,15 +109,28 @@ function decimal(v: string | null, min: number, max: number): number | null | un
 
 /**
  * GET /api/v1/lookup?key=K[&after=I][&limit=N]: published entries naming K, oldest first, as
- * `{index, entry}`. `entry` is the parsed canonical JSON; since the encoding is canonical
+ * `{index, entry}`. On a blinded log (M8) the parameter is `keyHmac` (64 lowercase hex), which a
+ * client holding the blinding key computes itself; `key` is refused, because answering it would
+ * let anyone who can call this route test guesses of key names. `entry` is the parsed canonical JSON; since the encoding is canonical
  * (DECISIONS D1.5) it re-encodes to the exact leaf bytes. `next` is the cursor for `after`, or
  * null when there is nothing more. `size` is the tree size the indexes were read at.
  */
 export async function lookup(url: URL, deps: ApiDeps, head: boolean): Promise<Response> {
-  const keys = url.searchParams.getAll('key');
-  if (keys.length !== 1) return badRequest('exactly one key parameter is required');
+  const param = deps.config.keyBlinding ? 'keyHmac' : 'key';
+  const other = deps.config.keyBlinding ? 'key' : 'keyHmac';
+  if (url.searchParams.has(other)) {
+    return badRequest(
+      deps.config.keyBlinding
+        ? 'this log blinds key names: look up keyHmac (HMAC-SHA256 of the key), not key'
+        : 'this log does not blind key names: look up key, not keyHmac',
+    );
+  }
+  const keys = url.searchParams.getAll(param);
+  if (keys.length !== 1) return badRequest(`exactly one ${param} parameter is required`);
   const key = keys[0] ?? '';
-  if (key === '' || !key.isWellFormed() || utf8Encode(key).length > MAX_OBJECT_KEY_BYTES) {
+  if (deps.config.keyBlinding) {
+    if (!/^[0-9a-f]{64}$/.test(key)) return badRequest('keyHmac must be 64 lowercase hex digits');
+  } else if (key === '' || !key.isWellFormed() || utf8Encode(key).length > MAX_OBJECT_KEY_BYTES) {
     return badRequest(`key must be 1-${String(MAX_OBJECT_KEY_BYTES)} bytes of UTF-8`);
   }
   const limit = decimal(url.searchParams.get('limit'), 1, LOOKUP_MAX_LIMIT);
@@ -147,7 +172,7 @@ export async function lookup(url: URL, deps: ApiDeps, head: boolean): Promise<Re
   const last = indexes.at(-1);
   return json(
     200,
-    { key, size: found.size, entries, next: more && last !== undefined ? last : null },
+    { [param]: key, size: found.size, entries, next: more && last !== undefined ? last : null },
     head,
   );
 }

@@ -1,0 +1,6 @@
+# Workers Static Assets headers for the dashboard (not served itself). The page loads only its
+# own script and stylesheet; connect-src is open so a copy of this page can verify any log.
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src *; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer

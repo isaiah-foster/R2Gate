@@ -270,7 +270,12 @@ describe('consumeBatch', () => {
       return Promise.resolve({ accepted: items.length, duplicates: 0, firstSeq: 0 });
     }
   }
-  const deps = (sink: IngestSink) => ({ config, sink, now: () => Date.parse(INGESTED_AT) });
+  const deps = (sink: IngestSink) => ({
+    config,
+    sink,
+    blinder: null,
+    now: () => Date.parse(INGESTED_AT),
+  });
 
   it('sends valid events and counts the rest in one call, then acks the batch', async () => {
     const sink = new FakeSink();
@@ -508,11 +513,11 @@ describe('GET /api/v1/status', () => {
     });
   });
 
-  it('only answers GET and HEAD', async () => {
+  it('only answers GET and HEAD (and CORS preflights)', async () => {
     const res = await exports.default.fetch(
       new Request('https://r2notary.example.com/api/v1/status', { method: 'POST' }),
     );
     expect(res.status).toBe(405);
-    expect(res.headers.get('allow')).toBe('GET, HEAD');
+    expect(res.headers.get('allow')).toBe('GET, HEAD, OPTIONS');
   });
 });

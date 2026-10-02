@@ -1,0 +1,14 @@
+{
+  "name": "@r2notary/dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/app.ts --bundle --format=esm --target=es2022 --outfile=public/app.js",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@r2notary/core": "*"
+  }
+}

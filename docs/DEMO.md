@@ -127,6 +127,18 @@ corrupted tile could be cached for a year.
 
 **Record:** the two `exit 1` lines and the CLI's error messages.
 
+## 5b. Optional (M8): a witness and the browser verifier
+
+If a witness was configured (`docs/OPERATIONS.md` §11), repeat step 1's `checkpoint` with
+`--witness "$WITNESS_VKEY"`: it prints the cosignature and its time. Then serve a fork to the
+witness, as the conformance harness does locally: a checkpoint of the same size with another root,
+signed with the log's key, posted to `<witness>/add-checkpoint` must get `422` and be kept as
+evidence. Open `https://<host>/` in a browser with the read token and vkey: the page verifies the
+same log and proves the audit's findings. Not run yet; key blinding is a choice made before a log's
+first entry, so it needs its own log (§12 there).
+
+**Record:** the cosignature line, the witness's 422, and a screenshot of the verified page.
+
 ## 6. Clean up
 
 Delete the demo objects (`npx wrangler r2 object delete "$B/demo/obj-$i" --remote` for each), or the

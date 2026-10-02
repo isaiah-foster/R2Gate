@@ -1,0 +1,2 @@
+# Built by `npm run build:dashboard` (and by wrangler before dev/deploy).
+public/app.js

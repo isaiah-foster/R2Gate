@@ -7,11 +7,14 @@
 
 import {
   EntryError,
+  MAX_OBJECT_KEY_BYTES,
   OBJECT_ACTIONS,
   encodeCanonical,
   encodeEntry,
   sha256,
   toHex,
+  utf8Encode,
+  type KeyBlinder,
   type ObjectAction,
   type ObjectEvent,
 } from '@r2notary/core';
@@ -87,6 +90,25 @@ function optionalString(
   return v;
 }
 
+/** The HMAC of a key; a key that cannot be one (empty, a lone surrogate) is an invalid message. */
+async function blindKey(blinder: KeyBlinder, key: string, field: string): Promise<string> {
+  try {
+    return await blinder.blind(key);
+  } catch {
+    throw new Invalid(`${field} is not a valid object key`);
+  }
+}
+
+/**
+ * The key rules encodeEntry applies to `key`, for a blinded entry that carries only its HMAC: the
+ * Sequencer refuses an item whose private key is not a valid object key.
+ */
+function checkObjectKey(key: string): void {
+  if (utf8Encode(key).length > MAX_OBJECT_KEY_BYTES) {
+    throw new Invalid(`object.key exceeds ${String(MAX_OBJECT_KEY_BYTES)} UTF-8 bytes`);
+  }
+}
+
 function isAction(v: string): v is ObjectAction {
   return (OBJECT_ACTIONS as readonly string[]).includes(v);
 }
@@ -101,6 +123,7 @@ export async function classifyMessage(
   body: unknown,
   config: Pick<Config, 'monitoredBucket' | 'logBucket'>,
   ingestedAt: string,
+  blinder: KeyBlinder | null = null,
 ): Promise<Classified> {
   try {
     if (!isRecord(body)) throw new Invalid('message body must be a JSON object');
@@ -120,19 +143,25 @@ export async function classifyMessage(
     if ('copySource' in body) {
       const src = body.copySource;
       if (!isRecord(src)) throw new Invalid('copySource must be a JSON object');
-      copySource = {
-        bucket: str(src, 'bucket', 'copySource.bucket'),
-        key: str(src, 'object', 'copySource.object'),
-      };
+      const srcBucket = str(src, 'bucket', 'copySource.bucket');
+      const srcKey = str(src, 'object', 'copySource.object');
+      copySource =
+        blinder === null
+          ? { bucket: srcBucket, key: srcKey }
+          : { bucket: srcBucket, keyHmac: await blindKey(blinder, srcKey, 'copySource.object') };
     }
 
+    // On a blinded log (M8) the entry names the object by keyHmac; the key travels next to it to
+    // the Sequencer, which keeps it privately for the objects view (store.ts).
+    const name =
+      blinder === null ? { key } : { keyHmac: await blindKey(blinder, key, 'object.key') };
     // encodeEntry enforces the rest: bucket and key rules, ETag format, integer sizes, RFC 3339
     // times, no size/etag on deletes, copySource only on CopyObject, the entry size limit.
     const entry = encodeEntry({
       v: 1,
       type: 'object.event',
       bucket,
-      key,
+      ...name,
       action,
       ...(size === undefined ? {} : { size }),
       ...(etag === undefined ? {} : { etag }),
@@ -140,9 +169,14 @@ export async function classifyMessage(
       ingestedAt,
       ...(copySource === undefined ? {} : { copySource }),
     });
+    if (blinder !== null) checkObjectKey(key);
     return {
       kind: 'event',
-      item: { eventId: await eventId({ bucket, key, action, etag, eventTime }), entry },
+      item: {
+        eventId: await eventId({ bucket, key, action, etag, eventTime }),
+        entry,
+        ...(blinder === null ? {} : { key }),
+      },
     };
   } catch (e) {
     if (e instanceof Invalid || e instanceof EntryError) {
@@ -155,6 +189,8 @@ export async function classifyMessage(
 export interface ConsumeDeps {
   readonly config: Config;
   readonly sink: IngestSink;
+  /** The log's key blinder (M8), or null if the log is not blinded. */
+  readonly blinder: KeyBlinder | null;
   /** Worker clock (ms); stamps `ingestedAt`. */
   readonly now: () => number;
 }
@@ -175,7 +211,7 @@ export async function consumeBatch(batch: MessageBatch, deps: ConsumeDeps): Prom
   let foreignDropped = 0;
   let lastInvalid: string | undefined;
   for (const msg of batch.messages) {
-    const c = await classifyMessage(msg.body, deps.config, ingestedAt);
+    const c = await classifyMessage(msg.body, deps.config, ingestedAt, deps.blinder);
     if (c.kind === 'event') items.push(c.item);
     else if (c.kind === 'loop') loopDropped++;
     else if (c.kind === 'foreign') foreignDropped++;

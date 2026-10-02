@@ -23,6 +23,7 @@ import {
 } from '@r2notary/core';
 import type { Config } from './config.ts';
 import type { SequencerStore } from './store.ts';
+import type { Cosign } from './witness.ts';
 
 /** The R2 operations publication needs; narrowed so tests can observe or wrap them. */
 export interface LogBucket {
@@ -37,6 +38,7 @@ export type PublishStep =
   | 'immutable-written' // (a) full bundles and full tiles
   | 'partials-written' // (b) partial bundle and partial tiles
   | 'archive-written' // (c) x-checkpoints/<size>
+  | 'witnessed' // cosignatures collected (M8; a no-op without witnesses)
   | 'checkpoint-written' // (d) live checkpoint
   | 'committed'; // (5) SQLite state advanced
 
@@ -52,12 +54,17 @@ export interface PublishDeps {
   readonly config: Pick<Config, 'logName' | 'logOrigin' | 'batchMaxEntries'>;
   readonly now: () => number;
   readonly hooks?: PublishHooks;
+  /** Collects witness cosignatures for the new checkpoint (worker/src/witness.ts), if any. */
+  readonly cosign?: Cosign;
 }
 
 export interface PublishResult {
   readonly previousSize: number;
   readonly size: number;
-  /** The signed checkpoint, or null if there was nothing to publish. */
+  /**
+   * The live checkpoint as published: the log-signed note plus any witness cosignatures, or null
+   * if there was nothing to publish.
+   */
   readonly checkpoint: string | null;
 }
 
@@ -162,7 +169,7 @@ export async function publish(d: PublishDeps): Promise<PublishResult> {
 
   // 2-3. Compute everything in memory, from SQLite state only.
   const state = store.loadLogState();
-  const entries = store.readEntries(from, target);
+  const { entries, keys } = store.readBatch(from, target);
   const update = await appendEntries(state, entries);
   const checkpoint = await signCheckpoint(
     { origin: config.logOrigin, size: target, rootHash: update.root, extensions: [] },
@@ -206,21 +213,34 @@ export async function publish(d: PublishDeps): Promise<PublishResult> {
   await writeAll(partials);
   await step('partials-written');
 
-  // 4c. Archived checkpoint.
-  const note = utf8Encode(checkpoint);
+  // 4c. Archived checkpoint: the log's signature only, so it stays a pure function of the prefix.
   const archive = key(archivedCheckpointPath(target));
   await hooks?.beforeWrite?.(archive);
-  await putImmutable(bucket, archive, note, 'checkpoint');
+  await putImmutable(bucket, archive, utf8Encode(checkpoint), 'checkpoint');
   await step('archive-written');
+
+  // 4c'. Witness cosignatures (M8), appended to the live checkpoint only. Witnesses are asked
+  // after the tiles exist (the proofs are read from them) and before anyone can see the size; a
+  // missing quorum throws here, before the live checkpoint moves.
+  const cosignatures =
+    d.cosign === undefined
+      ? []
+      : await d.cosign(checkpoint, target, async (t) => {
+          const obj = await bucket.get(key(tilePath(t.level, t.index, t.width)));
+          if (obj === null) throw new Error(`tile ${tilePath(t.level, t.index, t.width)} missing`);
+          return new Uint8Array(await obj.arrayBuffer());
+        });
+  const published = `${checkpoint}${cosignatures.join('')}`;
+  await step('witnessed');
 
   // 4d. Live checkpoint, last: everything it references is now durable (R2 is strongly consistent).
   const live = key(CHECKPOINT_PATH);
   await hooks?.beforeWrite?.(live);
-  await bucket.put(live, note, { httpMetadata: CHECKPOINT_METADATA });
+  await bucket.put(live, utf8Encode(published), { httpMetadata: CHECKPOINT_METADATA });
   await step('checkpoint-written');
 
   // 5. Commit.
-  store.commitPublish(from, update.state.tree, entries, d.now());
+  store.commitPublish(from, update.state.tree, entries, d.now(), keys);
   await step('committed');
-  return { previousSize: from, size: target, checkpoint };
+  return { previousSize: from, size: target, checkpoint: published };
 }

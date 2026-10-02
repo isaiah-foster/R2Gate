@@ -1,8 +1,8 @@
 {
   "benchmark": "PLAN §14.7 cost model (arithmetic over amplification.json; not a measurement)",
   "environment": {
-    "date": "2026-10-03T07:23:20.811Z",
-    "commit": "f35a560",
+    "date": "2026-10-03T10:57:03.456Z",
+    "commit": "75a0b24",
     "dirty": true,
     "os": "linux 7.2.5-4-omarchy",
     "cpu": "AMD Ryzen 5 3600 6-Core Processor",
@@ -15,7 +15,7 @@
     "runtime": "Node.js; computation only"
   },
   "inputs": {
-    "amplification": "bench/results/amplification.json (2026-10-03T07:23:06.895Z, commit f35a560)",
+    "amplification": "bench/results/amplification.json (2026-10-03T10:56:52.239Z, commit 75a0b24)",
     "monthSeconds": 2592000,
     "batchMaxEntries": 500,
     "queueMaxBatchSize": 100,
@@ -86,8 +86,8 @@
         "r2ClassB": 0,
         "r2GBAddedPerMonth": 27.649,
         "doRequests": 1063015.576,
-        "doRowsWritten": 22338232.513,
-        "doRowsRead": 112262555.921,
+        "doRowsWritten": 22340966.654,
+        "doRowsRead": 112282866.494,
         "queueOperations": 3000000,
         "workerInvocations": 341412.013
       },
@@ -126,8 +126,8 @@
         "r2ClassB": 0,
         "r2GBAddedPerMonth": 13.222,
         "doRequests": 682824.025,
-        "doRowsWritten": 17091261.363,
-        "doRowsRead": 55902808.5,
+        "doRowsWritten": 17093995.504,
+        "doRowsRead": 55923119.073,
         "queueOperations": 3000000,
         "workerInvocations": 341412.013
       },
@@ -166,8 +166,8 @@
         "r2ClassB": 0,
         "r2GBAddedPerMonth": 5.882,
         "doRequests": 488751.713,
-        "doRowsWritten": 14412934.442,
-        "doRowsRead": 27214744.103,
+        "doRowsWritten": 14415668.583,
+        "doRowsRead": 27235054.675,
         "queueOperations": 3000000,
         "workerInvocations": 341412.013
       },
@@ -175,11 +175,11 @@
         "r2ClassA": 2.7,
         "r2StorageAddedThisMonth": 0.09,
         "doRequests": 0.07,
-        "doRowsWritten": 14.41,
+        "doRowsWritten": 14.42,
         "doRowsRead": 0.03,
         "queues": 1.2,
         "workerRequests": 0.1,
-        "total": 18.6
+        "total": 18.61
       },
       "paidPlanUSD": {
         "base": 5,
@@ -206,8 +206,8 @@
         "r2ClassB": 0,
         "r2GBAddedPerMonth": 81.094,
         "doRequests": 2551300.433,
-        "doRowsWritten": 140516427.04,
-        "doRowsRead": 338674346.26,
+        "doRowsWritten": 140543767.27,
+        "doRowsRead": 338877372.384,
         "queueOperations": 30000000,
         "workerInvocations": 492850.624
       },
@@ -215,20 +215,20 @@
         "r2ClassA": 37.5,
         "r2StorageAddedThisMonth": 1.22,
         "doRequests": 0.38,
-        "doRowsWritten": 140.52,
+        "doRowsWritten": 140.54,
         "doRowsRead": 0.34,
         "queues": 12,
         "workerRequests": 0.15,
-        "total": 192.11
+        "total": 192.13
       },
       "paidPlanUSD": {
         "base": 5,
         "r2ClassA": 33,
         "doRequests": 0.23,
-        "doRowsWritten": 90.52,
+        "doRowsWritten": 90.54,
         "queues": 11.6,
         "workerRequests": 0,
-        "total": 140.35
+        "total": 140.37
       }
     },
     {
@@ -246,8 +246,8 @@
         "r2ClassB": 0,
         "r2GBAddedPerMonth": 21.46,
         "doRequests": 985701.247,
-        "doRowsWritten": 118911911.419,
-        "doRowsRead": 105816194.331,
+        "doRowsWritten": 118939251.648,
+        "doRowsRead": 106019220.454,
         "queueOperations": 30000000,
         "workerInvocations": 492850.624
       },
@@ -255,20 +255,20 @@
         "r2ClassA": 9.33,
         "r2StorageAddedThisMonth": 0.32,
         "doRequests": 0.15,
-        "doRowsWritten": 118.91,
+        "doRowsWritten": 118.94,
         "doRowsRead": 0.11,
         "queues": 12,
         "workerRequests": 0.15,
-        "total": 140.97
+        "total": 141
       },
       "paidPlanUSD": {
         "base": 5,
         "r2ClassA": 4.83,
         "doRequests": 0,
-        "doRowsWritten": 68.91,
+        "doRowsWritten": 68.94,
         "queues": 11.6,
         "workerRequests": 0,
-        "total": 90.34
+        "total": 90.37
       }
     },
     {
@@ -286,8 +286,8 @@
         "r2ClassB": 0,
         "r2GBAddedPerMonth": 9.433,
         "doRequests": 662715.361,
-        "doRowsWritten": 114300960.416,
-        "doRowsRead": 58562062.179,
+        "doRowsWritten": 114328300.645,
+        "doRowsRead": 58765088.302,
         "queueOperations": 30000000,
         "workerInvocations": 492850.624
       },
@@ -295,20 +295,20 @@
         "r2ClassA": 3.58,
         "r2StorageAddedThisMonth": 0.14,
         "doRequests": 0.1,
-        "doRowsWritten": 114.3,
+        "doRowsWritten": 114.33,
         "doRowsRead": 0.06,
         "queues": 12,
         "workerRequests": 0.15,
-        "total": 130.33
+        "total": 130.36
       },
       "paidPlanUSD": {
         "base": 5,
         "r2ClassA": 0,
         "doRequests": 0,
-        "doRowsWritten": 64.3,
+        "doRowsWritten": 64.33,
         "queues": 11.6,
         "workerRequests": 0,
-        "total": 80.9
+        "total": 80.93
       }
     },
     {
@@ -326,8 +326,8 @@
         "r2ClassB": 0,
         "r2GBAddedPerMonth": 125.395,
         "doRequests": 3526512.789,
-        "doRowsWritten": 1138177262.986,
-        "doRowsRead": 679590995.363,
+        "doRowsWritten": 1138410662.986,
+        "doRowsRead": 681324395.363,
         "queueOperations": 300000000,
         "workerInvocations": 1000000
       },
@@ -335,20 +335,20 @@
         "r2ClassA": 50.56,
         "r2StorageAddedThisMonth": 1.88,
         "doRequests": 0.53,
-        "doRowsWritten": 1138.18,
+        "doRowsWritten": 1138.41,
         "doRowsRead": 0.68,
         "queues": 120,
         "workerRequests": 0.3,
-        "total": 1312.13
+        "total": 1312.36
       },
       "paidPlanUSD": {
         "base": 5,
         "r2ClassA": 46.06,
         "doRequests": 0.38,
-        "doRowsWritten": 1088.18,
+        "doRowsWritten": 1088.41,
         "queues": 119.6,
         "workerRequests": 0,
-        "total": 1259.22
+        "total": 1259.45
       }
     },
     {
@@ -366,8 +366,8 @@
         "r2ClassB": 0,
         "r2GBAddedPerMonth": 47.73,
         "doRequests": 1515726.474,
-        "doRowsWritten": 1110158751.904,
-        "doRowsRead": 376633809.359,
+        "doRowsWritten": 1110392151.904,
+        "doRowsRead": 378367209.359,
         "queueOperations": 300000000,
         "workerInvocations": 1000000
       },
@@ -375,20 +375,20 @@
         "r2ClassA": 14.48,
         "r2StorageAddedThisMonth": 0.72,
         "doRequests": 0.23,
-        "doRowsWritten": 1110.16,
+        "doRowsWritten": 1110.39,
         "doRowsRead": 0.38,
         "queues": 120,
         "workerRequests": 0.3,
-        "total": 1246.27
+        "total": 1246.5
       },
       "paidPlanUSD": {
         "base": 5,
         "r2ClassA": 9.98,
         "doRequests": 0.08,
-        "doRowsWritten": 1060.16,
+        "doRowsWritten": 1060.39,
         "queues": 119.6,
         "workerRequests": 0,
-        "total": 1194.82
+        "total": 1195.05
       }
     },
     {
@@ -406,8 +406,8 @@
         "r2ClassB": 0,
         "r2GBAddedPerMonth": 40.536,
         "doRequests": 1200000,
-        "doRowsWritten": 1101233300,
-        "doRowsRead": 341566640,
+        "doRowsWritten": 1101466700,
+        "doRowsRead": 343300040,
         "queueOperations": 300000000,
         "workerInvocations": 1000000
       },
@@ -415,20 +415,20 @@
         "r2ClassA": 7.8,
         "r2StorageAddedThisMonth": 0.61,
         "doRequests": 0.18,
-        "doRowsWritten": 1101.23,
+        "doRowsWritten": 1101.47,
         "doRowsRead": 0.34,
         "queues": 120,
         "workerRequests": 0.3,
-        "total": 1230.46
+        "total": 1230.7
       },
       "paidPlanUSD": {
         "base": 5,
         "r2ClassA": 3.3,
         "doRequests": 0.03,
-        "doRowsWritten": 1051.23,
+        "doRowsWritten": 1051.47,
         "queues": 119.6,
         "workerRequests": 0,
-        "total": 1179.16
+        "total": 1179.4
       }
     }
   ]

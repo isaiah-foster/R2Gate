@@ -9,6 +9,8 @@ export default tseslint.config(
       '**/coverage/**',
       '**/.wrangler/**',
       'worker/worker-configuration.d.ts',
+      'witness/worker-configuration.d.ts',
+      'dashboard/public/app.js',
       'cli/**',
     ],
   },

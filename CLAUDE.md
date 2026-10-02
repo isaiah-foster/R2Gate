@@ -33,15 +33,17 @@ record reasoning in `docs/DECISIONS.md`.
 
 ```sh
 npm ci                       # install (Node >= 22)
-npm test                     # vitest: packages/core (node) + worker (workerd, @cloudflare/vitest-plugin)
+npm test                     # vitest: core, dashboard (node) + worker, witness (workerd, @cloudflare/vitest-plugin)
 npm run lint                 # eslint, typescript-eslint strictTypeChecked
 npm run typecheck            # tsc for root, packages/core, worker
 npm run format:check         # prettier (npm run format to fix)
 npx wrangler types           # run in worker/ after editing wrangler.jsonc
 npm run dev:sim              # local wrangler dev: r2notary + dev-only event simulator (needs SIGNING_KEY)
 npm run simulate -- --help   # send synthetic R2 notifications to dev:sim; compare /api/v1/status
-npm run keygen -- --origin <LOG_ORIGIN> --out worker/.dev.vars   # local secrets (gitignored)
-npm run conformance          # wrangler dev writer -> Go verifier, audit findings, corruption (~1 min)
+npm run keygen -- --origin <LOG_ORIGIN> --out worker/.dev.vars   # local secrets (gitignored); --blind adds KEY_BLINDING_KEY
+npm run keygen -- --witness <NAME> --out witness/.dev.vars       # a witness's cosigner key
+npm run build:dashboard      # esbuild dashboard/src -> dashboard/public/app.js (wrangler runs it before dev/deploy)
+npm run conformance          # wrangler dev writer (+ witness) -> Go and browser verifiers, audit, corruption, M8 stage
 npm run bench                # PLAN §14 benchmarks -> bench/results/*.json (local only; see docs/BENCHMARKS.md)
 npm run bench:amplification  # one of: hashing proofs amplification cost sequencer latency auditor
 
@@ -52,9 +54,10 @@ cd cli && go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...   # what CI r
 ## Layout
 
 `packages/core` pure TS (no Workers APIs except WebCrypto) · `worker` Cloudflare Worker + Sequencer DO ·
-`cli` Go verifier · `scripts` (`scripts/lib/dev.ts` runs wrangler dev for harnesses) · `bench` (Node
-drivers; `worker/bench` runs inside workerd) · `bench/results` · `docs` (DESIGN, THREAT_MODEL,
-DECISIONS, BENCHMARKS, OPERATIONS, DEMO). See PLAN §4 for the full target layout.
+`witness` C2SP tlog-witness Worker (M8) · `dashboard` browser verifier (static assets, M8) · `cli` Go
+verifier · `scripts` (`scripts/lib/dev.ts` runs wrangler dev for harnesses) · `bench` (Node drivers;
+`worker/bench` runs inside workerd) · `bench/results` · `docs` (DESIGN, THREAT_MODEL, DECISIONS,
+BENCHMARKS, OPERATIONS, DEMO). See PLAN §4 for the full target layout.
 
 ## Conventions and gotchas
 
@@ -94,8 +97,9 @@ DECISIONS, BENCHMARKS, OPERATIONS, DEMO). See PLAN §4 for the full target layou
   (`tilefetch.FetchError`, e.g. 404); keep that split when adding checks. Tiles are authenticated
   only through `tlog.TileHashReader`; `tlog.Tile.Path()` is not the tlog-tiles layout (use
   `tilefetch.TilePath`). Go tests build logs with `internal/testlog` (Go-only writer). The
-  conformance harness passes secrets with `wrangler dev --env-file` (skips `.dev.vars`; process env
-  is merged too, so it strips config keys from the child env, D5.7).
+  conformance harness passes secrets with `wrangler dev --env-file`, which reaches only the first
+  `-c` config: later ones read the `.dev.vars` beside them, so the launcher runs copies of the
+  configs from its temp dir (D8.14). Process env is merged too, so it strips config keys (D5.7).
 - Auditor (M6): scan state lives in the Sequencer (`worker/src/audit/store.ts`); each step is one
   synchronous transaction and is idempotent by page number / state, so a re-run step does nothing
   twice. The Workflow (`audit/scan.ts`) only drives it; keep control flow a function of step
@@ -114,3 +118,14 @@ DECISIONS, BENCHMARKS, OPERATIONS, DEMO). See PLAN §4 for the full target layou
   never deployed. `objects` writes real local objects with or without a notification (the local
   stand-in for a disabled rule). `npm run dev:sim` persists to `.wrangler/state`.
 - Commit trailer: end commits with the attribution line the harness specifies.
+- M8 (D8.x): witnesses: cosignatures are Ed25519 `cosignature/v1` (type 0x04), not ML-DSA (D8.4);
+  the witness's checks are core `evaluateAddCheckpoint`, its atomic store `storeIfUnchanged`; the
+  log collects cosignatures between the archive and live checkpoint writes, archives stay
+  log-signed (I6). In Go, `note.Open` with witness verifiers accepts a note without the log's
+  signature: `verify.OpenWitnessed` checks for it. Key blinding: an entry has `key` xor `keyHmac`;
+  the plaintext of a blinded entry travels as `AppendItem.key` and lives only in DO SQLite
+  (`entries.object_key`, `objects.key_hmac`); audit steps get HMACs precomputed in `ScanContext.names`
+  (steps cannot await). Blinding state is pinned per log on the first entry. The dashboard's
+  `verifier.ts` uses core (not independent; the Go CLI is). A Worker main module may export only
+  handlers (the witness's constants live in `limits.ts`). `build.cwd` in wrangler config is
+  relative to wrangler's working directory, not the config file (D8.3).

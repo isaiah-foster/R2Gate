@@ -10,12 +10,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/mod/sumdb/tlog"
 
+	"github.com/isaiahfoster/r2notary/cli/internal/cosign"
 	"github.com/isaiahfoster/r2notary/cli/internal/tilefetch"
 	"github.com/isaiahfoster/r2notary/cli/internal/verr"
 )
@@ -26,6 +29,32 @@ type Checkpoint struct {
 	Tree   tlog.Tree
 	// Note is the signed note exactly as received, suitable for saving and re-verifying.
 	Note []byte
+	// Cosignatures are the verified cosignatures from the witnesses the caller trusts (M8).
+	Cosignatures []Cosignature
+}
+
+// Cosignature is a verified witness cosignature (C2SP tlog-cosignature).
+type Cosignature struct {
+	Name    string
+	KeyHash uint32
+	Time    time.Time
+}
+
+// WitnessPolicy says which witnesses' cosignatures count and how many a checkpoint needs.
+type WitnessPolicy struct {
+	Witnesses []note.Verifier
+	Quorum    int
+}
+
+// QuorumError reports a checkpoint with fewer valid cosignatures than the policy requires. It is
+// not a verification failure: nothing false was received (a witness may be down, or the log may
+// publish best-effort), but the checkpoint cannot be trusted under the policy.
+type QuorumError struct {
+	Have, Want int
+}
+
+func (e *QuorumError) Error() string {
+	return fmt.Sprintf("checkpoint has %d of the %d witness cosignatures required", e.Have, e.Want)
 }
 
 // emptyRoot is the RFC 6962 hash of an empty tree, SHA-256 of nothing.
@@ -74,7 +103,15 @@ func ParseCheckpointText(text string) (*Checkpoint, error) {
 // origin must equal origin (I9). The signed-note rules are note.Open's: signatures from other
 // keys are ignored, but one from v that does not verify rejects the note.
 func OpenCheckpoint(msg []byte, v note.Verifier, origin string) (*Checkpoint, error) {
-	n, err := note.Open(msg, note.VerifierList(v))
+	return OpenWitnessed(msg, v, origin, WitnessPolicy{})
+}
+
+// OpenWitnessed is OpenCheckpoint, and also verifies cosignatures from the policy's witnesses
+// (a cosignature from one of them that does not verify is a failure, as for any known key) and
+// requires at least Quorum of them with a non-zero timestamp. Signatures from other keys are
+// ignored. The log's own signature is still required.
+func OpenWitnessed(msg []byte, v note.Verifier, origin string, p WitnessPolicy) (*Checkpoint, error) {
+	n, err := note.Open(msg, note.VerifierList(append([]note.Verifier{v}, p.Witnesses...)...))
 	if err != nil {
 		var unverified *note.UnverifiedNoteError
 		if errors.As(err, &unverified) {
@@ -91,6 +128,33 @@ func OpenCheckpoint(msg []byte, v note.Verifier, origin string) (*Checkpoint, er
 			return nil, verr.Failf("checkpoint signature from %s is not canonical base64", s.Name)
 		}
 	}
+	// With witnesses in the list, note.Open is satisfied by any one verified signature, so the
+	// log's own is checked for explicitly.
+	logSigned := false
+	var cosigs []Cosignature
+	for _, s := range n.Sigs {
+		if s.Name == v.Name() && s.Hash == v.KeyHash() {
+			logSigned = true
+			continue
+		}
+		for _, w := range p.Witnesses {
+			if s.Name != w.Name() || s.Hash != w.KeyHash() {
+				continue
+			}
+			t, err := cosign.Timestamp(s)
+			if err != nil {
+				return nil, verr.Fail(err)
+			}
+			// tlog-witness requires a non-zero time, and tlog-cosignature at most 2^63 - 1.
+			if t == 0 || t > math.MaxInt64 {
+				continue
+			}
+			cosigs = append(cosigs, Cosignature{Name: s.Name, KeyHash: s.Hash, Time: time.Unix(int64(t), 0).UTC()})
+		}
+	}
+	if !logSigned {
+		return nil, verr.Failf("checkpoint has no valid signature from %s", v.Name())
+	}
 	cp, err := ParseCheckpointText(n.Text)
 	if err != nil {
 		return nil, err
@@ -99,23 +163,30 @@ func OpenCheckpoint(msg []byte, v note.Verifier, origin string) (*Checkpoint, er
 		return nil, verr.Failf("checkpoint origin is %q, want %q", cp.Origin, origin)
 	}
 	cp.Note = msg
+	cp.Cosignatures = cosigs
+	if len(cosigs) < p.Quorum {
+		return cp, &QuorumError{Have: len(cosigs), Want: p.Quorum}
+	}
 	return cp, nil
 }
 
-// Log is a log to verify: where it is served, the key that signs it, and its expected origin.
+// Log is a log to verify: where it is served, the key that signs it, its expected origin, and the
+// witnesses whose cosignatures its live checkpoint must carry (none by default).
 type Log struct {
 	Client   *tilefetch.Client
 	Verifier note.Verifier
 	Origin   string
+	Witness  WitnessPolicy
 }
 
-// Checkpoint fetches and verifies the live checkpoint.
+// Checkpoint fetches and verifies the live checkpoint, under the log's witness policy. Saved
+// checkpoints (OpenCheckpoint) need only the log's signature: they were checked when saved.
 func (l *Log) Checkpoint(ctx context.Context) (*Checkpoint, error) {
 	msg, err := l.Client.Get(ctx, "checkpoint", tilefetch.MaxCheckpointSize)
 	if err != nil {
 		return nil, err
 	}
-	return OpenCheckpoint(msg, l.Verifier, l.Origin)
+	return OpenWitnessed(msg, l.Verifier, l.Origin, l.Witness)
 }
 
 // classify turns an error from tlog into a verification failure unless it is a fetch error

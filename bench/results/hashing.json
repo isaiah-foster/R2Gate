@@ -1,8 +1,8 @@
 {
   "benchmark": "PLAN §14.5 core hashing speed",
   "environment": {
-    "date": "2026-10-03T07:25:22.389Z",
-    "commit": "f35a560",
+    "date": "2026-10-03T10:51:35.778Z",
+    "commit": "75a0b24",
     "dirty": true,
     "os": "linux 7.2.5-4-omarchy",
     "cpu": "AMD Ryzen 5 3600 6-Core Processor",
@@ -25,56 +25,56 @@
       "strategy": "sequential",
       "ms": {
         "n": 15,
-        "min": 2334.485,
-        "median": 2538.523,
-        "p95": 2681.408,
-        "p99": 2681.408,
-        "max": 2681.408,
-        "mean": 2533.321
+        "min": 2315.282,
+        "median": 2422.337,
+        "p95": 2579.833,
+        "p99": 2579.833,
+        "max": 2579.833,
+        "mean": 2434.603
       },
-      "leavesPerSecondAtMedian": 25817,
+      "leavesPerSecondAtMedian": 27055,
       "hashesPerTree": 131071
     },
     {
       "strategy": "perLevel",
       "ms": {
         "n": 15,
-        "min": 954.502,
-        "median": 1086.059,
-        "p95": 1295.174,
-        "p99": 1295.174,
-        "max": 1295.174,
-        "mean": 1081.554
+        "min": 929.843,
+        "median": 1047.514,
+        "p95": 1215.77,
+        "p99": 1215.77,
+        "max": 1215.77,
+        "mean": 1063.953
       },
-      "leavesPerSecondAtMedian": 60343,
+      "leavesPerSecondAtMedian": 62563,
       "hashesPerTree": 131071
     },
     {
       "strategy": "chunked",
       "ms": {
         "n": 15,
-        "min": 828.639,
-        "median": 941.716,
-        "p95": 1073.143,
-        "p99": 1073.143,
-        "max": 1073.143,
-        "mean": 927.536
+        "min": 829.149,
+        "median": 905.841,
+        "p95": 1049.633,
+        "p99": 1049.633,
+        "max": 1049.633,
+        "mean": 917.98
       },
-      "leavesPerSecondAtMedian": 69592,
+      "leavesPerSecondAtMedian": 72348,
       "hashesPerTree": 131071
     },
     {
       "strategy": "nodeSync",
       "ms": {
         "n": 15,
-        "min": 573.667,
-        "median": 682.944,
-        "p95": 1094.604,
-        "p99": 1094.604,
-        "max": 1094.604,
-        "mean": 729.983
+        "min": 540.707,
+        "median": 722.841,
+        "p95": 1219.905,
+        "p99": 1219.905,
+        "max": 1219.905,
+        "mean": 733.662
       },
-      "leavesPerSecondAtMedian": 95961,
+      "leavesPerSecondAtMedian": 90664,
       "hashesPerTree": 131071
     }
   ],
@@ -85,66 +85,66 @@
         "entries": 1,
         "ms": {
           "n": 15,
-          "min": 2.023,
-          "median": 2.154,
-          "p95": 2.357,
-          "p99": 2.357,
-          "max": 2.357,
-          "mean": 2.185
+          "min": 1.915,
+          "median": 2.338,
+          "p95": 3.549,
+          "p99": 3.549,
+          "max": 3.549,
+          "mean": 2.568
         },
-        "entriesPerSecondAtMedian": 464
+        "entriesPerSecondAtMedian": 428
       },
       {
         "entries": 10,
         "ms": {
           "n": 15,
-          "min": 2.29,
-          "median": 3.798,
-          "p95": 202.221,
-          "p99": 202.221,
-          "max": 202.221,
-          "mean": 17.486
+          "min": 1.979,
+          "median": 2.055,
+          "p95": 2.54,
+          "p99": 2.54,
+          "max": 2.54,
+          "mean": 2.179
         },
-        "entriesPerSecondAtMedian": 2633
+        "entriesPerSecondAtMedian": 4866
       },
       {
         "entries": 100,
         "ms": {
           "n": 15,
-          "min": 2.99,
-          "median": 3.091,
-          "p95": 6.096,
-          "p99": 6.096,
-          "max": 6.096,
-          "mean": 3.439
+          "min": 2.919,
+          "median": 3.139,
+          "p95": 3.337,
+          "p99": 3.337,
+          "max": 3.337,
+          "mean": 3.108
         },
-        "entriesPerSecondAtMedian": 32352
+        "entriesPerSecondAtMedian": 31857
       },
       {
         "entries": 500,
         "ms": {
           "n": 15,
-          "min": 6.874,
-          "median": 8.001,
-          "p95": 14.162,
-          "p99": 14.162,
-          "max": 14.162,
-          "mean": 8.545
+          "min": 8.209,
+          "median": 8.691,
+          "p95": 11.451,
+          "p99": 11.451,
+          "max": 11.451,
+          "mean": 8.986
         },
-        "entriesPerSecondAtMedian": 62492
+        "entriesPerSecondAtMedian": 57531
       },
       {
         "entries": 1000,
         "ms": {
           "n": 15,
-          "min": 12.615,
-          "median": 14.221,
-          "p95": 18.856,
-          "p99": 18.856,
-          "max": 18.856,
-          "mean": 14.823
+          "min": 14.621,
+          "median": 15.441,
+          "p95": 19.654,
+          "p99": 19.654,
+          "max": 19.654,
+          "mean": 16.411
         },
-        "entriesPerSecondAtMedian": 70319
+        "entriesPerSecondAtMedian": 64763
       }
     ]
   }

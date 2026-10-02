@@ -1,8 +1,8 @@
 {
   "benchmark": "PLAN §14.6 auditor throughput",
   "environment": {
-    "date": "2026-10-03T07:30:11.766Z",
-    "commit": "f35a560",
+    "date": "2026-10-03T11:07:58.632Z",
+    "commit": "75a0b24",
     "dirty": true,
     "os": "linux 7.2.5-4-omarchy",
     "cpu": "AMD Ryzen 5 3600 6-Core Processor",
@@ -27,42 +27,42 @@
     "pages": 10,
     "ms": {
       "n": 5,
-      "min": 771.671,
-      "median": 795.38,
-      "p95": 891.118,
-      "p99": 891.118,
-      "max": 891.118,
-      "mean": 820
+      "min": 753.834,
+      "median": 780.595,
+      "p95": 806.904,
+      "p99": 806.904,
+      "max": 806.904,
+      "mean": 783.298
     },
-    "objectsPerSecondAtMedian": 12573
+    "objectsPerSecondAtMedian": 12811
   },
   "backfill": {
     "objects": 10000,
     "pages": 10,
-    "ms": 2263.36,
-    "objectsPerSecond": 4418
+    "ms": 2290.916,
+    "objectsPerSecond": 4365
   },
   "deepScrub": {
     "objects": 20,
     "bytesPerObject": 8388608,
     "auditWithoutScrubMs": {
       "n": 5,
-      "min": 38.294,
-      "median": 40.52,
-      "p95": 59.729,
-      "p99": 59.729,
-      "max": 59.729,
-      "mean": 43.836
+      "min": 38.167,
+      "median": 39.178,
+      "p95": 56.652,
+      "p99": 56.652,
+      "max": 56.652,
+      "mean": 42.585
     },
     "auditWithScrubMs": {
       "n": 5,
-      "min": 959.52,
-      "median": 987.14,
-      "p95": 1061.372,
-      "p99": 1061.372,
-      "max": 1061.372,
-      "mean": 998.03
+      "min": 932.335,
+      "median": 950.706,
+      "p95": 1016.439,
+      "p99": 1016.439,
+      "max": 1016.439,
+      "mean": 961.465
     },
-    "megabytesPerSecondAtMedians": 177.2
+    "megabytesPerSecondAtMedians": 184.1
   }
 }

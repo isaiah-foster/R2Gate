@@ -17,10 +17,13 @@
 
 import {
   MAX_OBJECT_KEY_BYTES,
+  decodeEntry,
   encodeEntry,
+  loggedName,
   utf8Encode,
   type AuditFinding,
   type FindingKind,
+  type ObjectName,
 } from '@r2notary/core';
 import type { AppendItem, SequencerStore } from '../store.ts';
 import {
@@ -119,6 +122,12 @@ export interface ScanContext {
   /** Dedupe window for appended entries (DEDUPE_TTL_SECONDS). */
   readonly ttlMs: number;
   readonly bucket: string;
+  /**
+   * Key blinding (M8): null if the log is not blinded; otherwise the keyHmac of keys the step
+   * may name that the objects view does not already hold (listed or scrubbed keys), computed by
+   * the Sequencer before the step, since HMACs are asynchronous and a step is not.
+   */
+  readonly names: ReadonlyMap<string, string> | null;
 }
 
 export interface ScanReport {
@@ -136,7 +145,10 @@ export interface ScanReport {
   readonly dropped: number;
   readonly observations: number;
   readonly byKind: Readonly<Record<string, number>>;
-  /** The first REPORT_MAX_FINDINGS findings in log order. */
+  /**
+   * The first REPORT_MAX_FINDINGS findings in log order. `key` is as the log names it: the
+   * keyHmac on a blinded log (M8), so a report never discloses more than the log does.
+   */
   readonly entries: readonly { index: number; kind: string; key: string }[];
   readonly truncated: boolean;
 }
@@ -290,9 +302,31 @@ export class AuditStore {
     return r === undefined ? null : this.#summary(r);
   }
 
-  /** Appends one entry inside the caller's transaction and returns its log index. */
-  #append(eventId: string, entry: Uint8Array, ctx: ScanContext): number {
-    const item: AppendItem = { eventId, entry };
+  /** How the log names `key`: the key itself, or its keyHmac on a blinded log. */
+  #name(key: string, ctx: ScanContext): ObjectName {
+    if (ctx.names === null) return { key };
+    const keyHmac = ctx.names.get(key) ?? this.#log.objectState(key)?.keyHmac ?? null;
+    if (keyHmac === null) throw new Error('unreachable: no blinded name for a key');
+    return { keyHmac };
+  }
+
+  /** The string the log names `key` by (key_index, reports). */
+  #logged(key: string, ctx: ScanContext): string {
+    const n = this.#name(key, ctx);
+    return n.keyHmac ?? n.key;
+  }
+
+  /**
+   * Appends one entry inside the caller's transaction and returns its log index. `key` is the
+   * object it is about, kept privately with a blinded entry (store.ts) so commit can update the
+   * expected-state view.
+   */
+  #append(eventId: string, entry: Uint8Array, ctx: ScanContext, key?: string): number {
+    const item: AppendItem = {
+      eventId,
+      entry,
+      ...(key !== undefined && ctx.names !== null ? { key } : {}),
+    };
     const r = this.#log.insertInTransaction([item], ctx.now, ctx.ttlMs);
     // Audit event IDs are unique per scan step, and every step runs once (its effects and its
     // progress commit together), so a duplicate here means that invariant broke.
@@ -462,13 +496,14 @@ export class AuditStore {
               v: 1,
               type: 'object.snapshot',
               bucket: ctx.bucket,
-              key: o.key,
+              ...this.#name(o.key, ctx),
               size: o.size,
               etag: o.etag,
               uploaded: iso(o.uploaded),
               snapshotId: req.scanId,
             }),
             ctx,
+            o.key,
           );
           snapshots++;
         });
@@ -502,7 +537,7 @@ export class AuditStore {
       type: 'audit.finding',
       kind: c.kind,
       bucket: ctx.bucket,
-      key: c.key,
+      ...this.#name(c.key, ctx),
       ...(c.observed === undefined ? {} : { observed: c.observed }),
       ...(c.expected === undefined ? {} : { expected: c.expected }),
       scanId: s.scan_id,
@@ -546,7 +581,7 @@ export class AuditStore {
             v: 1,
             type: 'audit.observation',
             bucket: ctx.bucket,
-            key: o.key,
+            ...this.#name(o.key, ctx),
             etag: o.etag,
             size: o.size,
             sha256: o.sha256,
@@ -554,6 +589,7 @@ export class AuditStore {
             observedAt: iso(o.observedAt),
           }),
           ctx,
+          o.key,
         );
         const observed = {
           etag: o.etag,
@@ -567,7 +603,7 @@ export class AuditStore {
             type: 'audit.finding',
             kind: 'CONTENT_DRIFT',
             bucket: ctx.bucket,
-            key: o.key,
+            ...this.#name(o.key, ctx),
             observed,
             ...(expected === undefined ? {} : { expected }),
             scanId,
@@ -577,8 +613,8 @@ export class AuditStore {
           this.#recordFinding(
             scanId,
             'CONTENT_DRIFT',
-            o.key,
-            this.#append(`drift:${id}:${suffix}`, entry, ctx),
+            this.#logged(o.key, ctx),
+            this.#append(`drift:${id}:${suffix}`, entry, ctx, o.key),
             entry,
           );
           findings++;
@@ -648,8 +684,12 @@ export class AuditStore {
         const current = this.#log.objectState(c.key)?.seq ?? null;
         if (current === c.basis_seq) {
           const entry = new Uint8Array(c.entry);
-          const seq = this.#append(`find:${scanId}:${String(c.id)}`, entry, ctx);
-          this.#recordFinding(scanId, c.kind as FindingKind, c.key, seq, entry);
+          const seq = this.#append(`find:${scanId}:${String(c.id)}`, entry, ctx, c.key);
+          // The name the log uses is in the entry (an unlogged key has no row to look it up in).
+          const d = decodeEntry(entry);
+          const name = d.known ? loggedName(d.entry) : null;
+          if (name === null) throw new Error('unreachable: a candidate entry names no object');
+          this.#recordFinding(scanId, c.kind as FindingKind, name.name, seq, entry);
           confirmed++;
         }
         this.#sql.exec('DELETE FROM scan_candidates WHERE id = ?', c.id);

@@ -1261,3 +1261,303 @@ percentiles.
 - A staleness alarm in `monitor` (a log that stops growing is not reported; `docs/THREAT_MODEL.md`).
 - CI still not observed running (D0.8); the benchmarks are not run in CI (timings there would mean
   nothing), but their code is type-checked and linted.
+
+## M8: Stretch (2026-10-03)
+
+Specs and docs checked for this milestone (2026-10-03): C2SP `tlog-witness`, `tlog-cosignature`
+and `signed-note` (editor's copies); Workers Web Crypto (Ed25519, HMAC, and ML-DSA behind the
+`webcrypto_modern_algorithms` flag); Workers Static Assets (configuration, routing,
+`run_worker_first`, `_headers`); wrangler custom builds (`build`) and the 4.147 config schema and
+source for `build.cwd`; R2 Workers API reference (`head`, `checksums`); R2 S3 API compatibility
+(checksum types, PutObject headers). Code: `packages/core/src/{proof,note,checkpoint,witness,
+blinding,entry}.ts`, `witness/` (new Worker), `dashboard/` (new), `worker/src/{witness,blinding,
+config,publish,store,sequencer,ingest,api,index}.ts`, `worker/src/audit/store.ts`,
+`cli/internal/{cosign,blind,verify,entry,monitor}`, `cli/cmd/r2notary`, `scripts/conformance.ts`.
+
+### D8.1 Scope: items 1-3 of PLAN M8, items 4 and 5 deferred
+
+PLAN M8 lists five stretch items "in this order of value" and no acceptance criteria. Done: (1) the
+in-browser verifier, (2) witness cosigning, (3) key blinding. Each has tests that were broken on
+purpose to check they catch what they claim (D8.12), and all three are exercised together against
+the real Workers in the conformance harness. Deferred, with reasons in D8.10 and D8.11: (4) gateway
+mode and (5) multi-bucket / sharded state. The acceptance criteria used, since the plan gives none:
+each feature verifiable from outside the writer (Go CLI, or a browser), the §8 invariants it touches
+re-checked (I2, I3 and I6 with witnesses in the publication path; I7 and I9 for the browser
+verifier and for cosigned checkpoints), and no key name in a blinded log's published bytes.
+
+### D8.2 Inclusion proofs in packages/core (follows D2.10)
+
+D2.10 deferred TypeScript inclusion proofs because nothing needed them; the browser verifier does.
+`inclusionProof` (RFC 6962 §2.1.1 PATH) and `verifyInclusion` (RFC 9162 §2.1.3.2) were written
+test-first against an independent recursive reference (`test/reference.ts`), three vectors derived
+from the `transparency-dev/merkle` node-hash table, and tile-built trees across level boundaries up
+to 70,000 entries. As with consistency proofs, a mutated tree size is not tested as a forgery (the
+checkpoint signature binds size and root); a mutated index is.
+
+### D8.3 The browser verifier (dashboard/)
+
+- **What it checks:** the checkpoint signature and origin (and a witness policy, if given), every
+  entry it shows (an inclusion proof computed in the browser from tiles), and that the log only grew
+  since the browser last verified it: the last verified checkpoint per origin is kept in
+  localStorage and the next one must be consistent with it (a small monitor). Findings from the API
+  are each proven, and their number is checked against the scan's signed end entry, as the Go CLI
+  does (D6.11). Status counters are shown as what they are: unverified.
+- **Not independent:** it uses `packages/core`, the writer's own code, so a bug shared by writer
+  and core would not be caught by it. It demonstrates that a browser need not trust the server
+  (PLAN §5.8); the independent verifier is still the Go CLI (PLAN G3).
+- **Trust in the page itself:** served by the log's Worker, the page could be replaced by a
+  dishonest one. The page says so and suggests saving it and opening the copy locally. For that,
+  the read API now answers CORS like the log routes (D4.12 left this open): bearer tokens, no
+  cookies, so another origin reads only what the token it was given can read. Admin routes have no
+  CORS, so a browser on another origin cannot call them (a POST with `Authorization` needs a
+  preflight, which they refuse).
+- **Page security:** a `_headers` file sets a CSP with `script-src 'self'`, `style-src 'self'`,
+  `default-src 'none'` and `connect-src *` (any log), and everything is rendered with `textContent`
+  (keys are attacker-chosen and the page holds a token). The read token and blinding key are kept in
+  sessionStorage only; the vkey and witness keys (public) in localStorage. A link may carry the vkey
+  in its fragment, which is never sent to the server.
+- **Serving:** Workers Static Assets at `/`. Asset requests do not run the Worker (docs), and
+  `run_worker_first` covers `/log/*` and `/api/*`, so no file can shadow the log or API. The bundle
+  (`dashboard/public/app.js`, esbuild, pinned to wrangler's own 0.28.1) is built by wrangler's
+  `build` hook before `dev` and `deploy`, and is gitignored; the HTML, CSS and `_headers` are
+  committed so the assets directory always exists (the test pool needs it).
+- **Docs discrepancy:** `build.cwd` is resolved against wrangler's working directory, not the
+  config file's (wrangler 4.147 source; the docs say only "the directory in which the command is
+  executed"), while `watch_dir` is resolved against the config file. `cwd: ".."` therefore broke
+  `npm run dev:sim` from the repository root. The command is now `npm run build
+--workspace=@r2notary/dashboard`, which npm resolves from any directory in the repository.
+- **Tests:** `dashboard/test/verifier.test.ts` runs the verifier in Node against logs built with
+  core: tile-boundary entries, recent entries, consistency and rollback, witness policy, and every
+  resource a reader of a size-600 log depends on corrupted in three bits (each must end in
+  `VerifyError`; a missing resource in `UnavailableError`). The conformance harness runs it against
+  the real Worker (D8.12). The page was loaded once in headless Chromium against `wrangler dev`: the
+  CSP was served, the checkpoint verified in the page, 20 entries and an audit finding were proven.
+  The DOM code itself has no automated tests.
+
+### D8.4 Cosignatures are Ed25519 `cosignature/v1`, not ML-DSA-44
+
+- **Spec says:** `tlog-witness` "Witnesses SHOULD use ML-DSA-44 cosignatures"; `tlog-cosignature`
+  defines both, Ed25519 (type 0x04, signs `cosignature/v1\ntime <t>\n` + checkpoint text) and
+  ML-DSA-44 (type 0x06, signs a binary `subtree/v1` structure).
+- **Decision:** Ed25519 only. Workers expose ML-DSA only behind the `webcrypto_modern_algorithms`
+  compatibility flag, Node 22 (this project's minimum and CI version) has no ML-DSA in WebCrypto,
+  and Ed25519 is what deployed witnesses and Go tooling (`transparency-dev/formats`) use today. A
+  log must verify the cosignatures it keeps (D8.6), so the log, the witness, the CLI and the
+  browser all need the algorithm. Revisit when ML-DSA is unflagged in Workers.
+- **Interoperability is tested against a third party:** a vector (a log signature and a cosignature
+  over a fixed checkpoint, from fixed seeds) was generated outside the repository with
+  `github.com/transparency-dev/formats` v0.1.1 and `golang.org/x/mod/sumdb/note`. Both the TS and Go
+  implementations verify it, and both reproduce the cosignature byte for byte from the same key and
+  time. No dependency was added: the vector is data.
+- **Keys:** Go `note` formats with type byte 0x04 (`PRIVATE+KEY+name+id+base64(0x04‖seed)`; the vkey
+  form is the spec's). The key ID covers the type byte, so a cosigner key never matches a log key;
+  both implementations refuse one kind where the other is expected.
+
+### D8.5 The witness Worker (witness/)
+
+- C2SP tlog-witness `add-checkpoint` with every status code of the spec (400, 403, 404, 409 with
+  `text/x.tlog.size`, 422), and the optional monitoring endpoint `GET /<sha256(origin)>/checkpoint`.
+  Configuration: `WITNESS_KEY` (secret) and `WITNESS_LOGS` (origin and trusted log vkeys).
+- **The checks are a pure core function** (`evaluateAddCheckpoint`), shared with the log's tests,
+  which use it as an in-memory witness. The Worker wraps it in a SQLite Durable Object.
+- **Atomicity (spec MUST):** checking the old size and storing the new checkpoint must be one atomic
+  step. Verification and cosigning await WebCrypto, so the check is repeated, with the write, in
+  one synchronous transaction after all awaits (`storeIfUnchanged`). A test of two concurrent
+  submissions passed even with that re-check removed: locally the requests never interleave. The
+  re-check is therefore tested directly (a record that moved on after verification must not be
+  overwritten), and that test fails when the re-check is removed.
+- **Evidence:** a 422 always comes after the log's signature verified, so the request is a signed
+  checkpoint that does not extend what the witness saw. The last 100 are kept (the spec allows
+  this), readable by the operator through the DO, not over HTTP.
+- No authentication, as the spec says: only logs in `WITNESS_LOGS` are accepted, and their
+  signatures are checked.
+- **What a witness is worth depends on who runs it.** One deployed by the log's own operator cannot
+  catch that operator showing different logs to different readers. The Worker is separate so it can
+  be deployed by someone else, and the log speaks the spec's protocol, so it can use any compatible
+  witness instead.
+
+### D8.6 Log side: cosign before the checkpoint becomes visible
+
+- **Where:** a new publication step between the archived checkpoint (4c) and the live checkpoint
+  (4d). Each witness gets the checkpoint and a consistency proof from the size it last cosigned,
+  computed from the tiles just written to R2 with core's proof code. The returned cosignatures are
+  verified (a line from the witness's key that does not verify, or has timestamp 0, counts as that
+  witness failing; lines from other keys are ignored) and appended to the live checkpoint only.
+- **Archives stay log-signed:** `x-checkpoints/<size>` remains a pure function of the log prefix,
+  so I6 holds as before. The live checkpoint, the one mutable resource, is no longer byte-identical
+  across a retry once witnesses are configured (cosignature timestamps); I6 never covered it.
+- **Quorum:** `WITNESS_QUORUM` cosignatures are required, or the publication fails before the live
+  checkpoint moves and is retried by the alarm (D2.8); entries stay durable meanwhile. A permanently
+  absent witness therefore stops visibility, which is the point of requiring it. `0` publishes with
+  whatever was collected.
+- **Recovery:** the witness's last size is a hint in SQLite. A wrong hint (lost state, a crash after
+  the witness cosigned but before the hint was recorded) gets a 409 with the real size, and the
+  request is repeated once. A witness that has cosigned a size beyond the checkpoint being published
+  is refused: that is a fork or lost log state, and needs a human. Tested: crash after the
+  `witnessed` step, quorum failures of every kind, 409 recovery, two witnesses.
+- `/api/v1/status` shows each witness's last cosigned size and last error. Requests time out after
+  10 s.
+
+### D8.7 CLI witness policy
+
+- `--witness VKEY` (repeatable, or `@FILE`) and `--witness-quorum N` (default 1) apply to the live
+  checkpoint of every command; `checkpoint` prints each cosignature's time (the signed time D5.5
+  said would come with witnesses).
+- **Exit codes:** a trusted witness's cosignature that does not verify is a failure (exit 1, signed
+  evidence of something false). Too few cosignatures is exit 4: nothing false was received (a witness
+  may be down, or the log publishes best-effort), but the checkpoint cannot be trusted under the
+  policy. `monitor` retries exit 4 in loop mode, which suits a witness catching up.
+- **A pitfall in Go's `note.Open`:** with witness verifiers in the list, any one verified signature
+  satisfies it, so a note with a cosignature but no log signature opened without error. The CLI
+  now checks for the log's own signature explicitly; a test fails without that check.
+- Saved checkpoints (`--old`, `--new`, monitor state) are checked with the log key only: they were
+  checked under the policy when saved.
+- **Not done: freshness.** Cosignature times could detect a log that stops growing (D7.12), but this
+  log submits to witnesses only when it publishes new entries, so an idle honest log would look
+  stale. That needs periodic re-witnessing by the log first.
+
+### D8.8 Key blinding
+
+- **Format:** `keyHmac` = lowercase hex of HMAC-SHA256(`KEY_BLINDING_KEY`, UTF-8 key), in place of
+  `key` in every entry that names an object, copy sources included; an entry never mixes the two
+  forms. `KEY_BLINDING_KEY` is unpadded base64url of at least 32 bytes (`npm run keygen -- --blind`).
+  Entry schema `v` stays 1: the field is an alternative within v1, and nothing has been published.
+- **The writer still works on real keys.** The auditor's merge-join, dedupe event IDs and the
+  objects view need them, and only the Sequencer's private SQLite holds them: the consumer sends
+  each blinded entry with its plaintext key (`AppendItem.key`), the Sequencer checks that the HMAC
+  matches and that no plaintext key is in a blinded entry, keeps the key in `entries.object_key`
+  until the entry is published, and keeps both forms in the objects view (`objects.key_hmac`).
+  Audit steps are synchronous transactions (D6.1) and HMAC is asynchronous, so the Sequencer
+  computes the names a step may need before the step.
+- **Fixed per log:** the first entry records "off" or the secret's fingerprint; turning blinding on
+  or off, or changing the secret, is refused for an existing log (a log written before M8 counts as
+  "off"). A mixed log would be unsearchable by either name.
+- **Lookups:** on a blinded log `/api/v1/lookup` takes only `keyHmac`. Accepting `key` would let
+  anyone who can call it (everyone, on a public log) test guesses. Clients with the blinding key
+  compute the HMAC themselves: the Go CLI (`--blinding-key-file` or `$R2NOTARY_BLINDING_KEY`, with
+  Go's own `crypto/hmac`) and the browser.
+- **What it does not hide:** the same key always has the same HMAC, so readers see how often each
+  (unnamed) object changes, its sizes, its times, and its ETag, which for single-part uploads is the
+  MD5 of the content: anyone who can guess a file's content can test it. The bucket name stays.
+  Whoever holds the blinding key can test guesses of key names, so it is shared like a read token.
+- **Elsewhere:** audit reports name keys as the log does (by `keyHmac`), webhooks already carried no
+  names, and `monitor --watch` refuses a blinded log (exit 2) instead of watching silently: a
+  prefix cannot be matched against HMACs.
+
+### D8.9 Schema v4 and an extra read avoided
+
+Schema v4 adds `witnesses`, `entries.object_key` and `objects.key_hmac` (tested v3→v4 upgrade). The
+first version read `object_key` at commit with a second query over the published range, which would
+have added billed rows read to every publication, blinded or not. Publication now reads the column
+in the read it already does (`readBatch`).
+
+### D8.10 Deferred: gateway mode (PLAN M8 item 4)
+
+- **Plan said:** an optional synchronous write-through that records a SHA-256 for uploads that
+  supply `x-amz-checksum-sha256`.
+- **Why not now:** it contradicts a stated non-goal ("Not an S3 proxy or gateway; nothing sits on
+  the data path", PLAN §2), and an S3-compatible gateway means handling SigV4 and request size
+  limits on the write path. More importantly, the premise is not established by the docs: R2's S3
+  API page lists SHA-256 checksums as `COMPOSITE` only (multipart) and lists no checksum headers for
+  PutObject, and the Workers API documents `checksums.sha256` only for objects written with the
+  binding's `put()` and a checksum. What an S3 client's `x-amz-checksum-sha256` produces in R2 can
+  only be checked on real R2.
+- **A design for later that stays off the data path:** at ingest, `head()` the object and, if its
+  ETag still equals the event's, log the SHA-256 R2 stored for it (one Class B read per event,
+  opt-in). Deep scrub already compares bodies with that stored checksum (D6.8). First, a remote
+  contract test showing which upload paths store a SHA-256 visible to the binding.
+
+### D8.11 Deferred: multi-bucket and sharded state (PLAN M8 item 5)
+
+Several buckets are already supported as several deployments, one log each (DESIGN "Questions a
+reviewer will ask"), with no change to the format. Sharding the objects view across Durable Objects
+addresses a limit not reached or measured (DO SQLite storage per object), would need key-range
+sharding to keep the auditor's merge-join ordered, and would not relieve the actual ceiling, the
+single sequencer (D7.8). Revisit with a measured need.
+
+### D8.12 Testing notes
+
+- **New suites:** core `cosignature`, `witness`, `blinding` and the inclusion-proof cases in
+  `proof`; `witness/test` (the Worker: every status code, the monitoring endpoint, evidence, the
+  atomic store); `dashboard/test` (the browser verifier, including I7-style corruption); worker
+  `witness` (publication with in-memory witnesses), `blinding` (a blinded Sequencer over real DO
+  storage: ingest, publication, lookups, the pinned state, a full audit with deep scrub); Go
+  `cosign`, `blind`, witness policy in `verify` and the CLI.
+- **Mutation check:** each was broken on purpose and a test failed: the witness's atomic re-check
+  (1, after D8.5's first test was found not to catch it), cosignature verification on the log side
+  (1), 409 handling (2), the quorum check (3), zero-time cosignatures accepted (1 TS, 1 Go), a
+  witness ahead accepted (1), the browser verifier skipping inclusion proofs (1), the Go log-
+  signature check with witnesses (1), audit reports listing real keys (1), the blinding-state guard
+  (1), caching the blinding check before its transaction commits (1). One mutant survived and is
+  equivalent: refusing a plaintext key in a blinded entry is redundant with the HMAC comparison
+  that follows (a key is never its own HMAC); the check stays for its clearer error.
+- **A test that was wrong, caught:** the first I7 test of the browser verifier corrupted every stored
+  file, including partial tiles of an earlier checkpoint that no reader of the later one fetches.
+  It now corrupts exactly the resources the later checkpoint depends on.
+
+### D8.13 Benchmarks re-run, and two findings
+
+- Code on measured paths changed (publication, the store, ingest, the Sequencer, the Go verifier),
+  so every benchmark was re-run (rule from M7) rather than carrying M7's numbers forward.
+- **Finding: the first M8 version added a SQLite row read to every append.** The blinding-state
+  check read `meta` in each append's transaction, even with blinding off: 8.00 → 9.02 rows read per
+  queue batch in `amplification.json`. The check is now done once per Durable Object instance
+  (only after the state is read back as recorded, so a rolled-back first append cannot leave it
+  unrecorded; tested). What remains is one-time: one row written per log for the record, a few rows
+  read per instance, and 16 KiB of SQLite pages for the new columns and table. The modeled monthly
+  costs moved by at most a few cents (10M events at 5 s: 140.97 → 141.00 USD).
+- **Finding: a race in the sequencer benchmark.** Timing `publish` of 1,000 entries with
+  `BATCH_MAX_ENTRIES=1000` makes the alarm due as soon as they are appended; when the alarm finishes
+  first, the timed admin call has nothing to publish. M7's run happened never to hit it; the first
+  M8 run did and aborted. Such samples are now discarded and counted (`discardedAlarmPublished` in
+  `sequencer.json`); an admin call that joins an alarm already running is single-flight and counts.
+- One run of the amplification harness exited 1 without a recorded cause (its report was in a
+  temporary directory that the harness deletes); the run before it and the three after it passed.
+  Not explained.
+
+### D8.14 Correction to D5.7: with two configs, `--env-file` reaches only the first
+
+- **Found while running the README verbatim:** with `wrangler dev -c simulator -c worker
+--env-file F`, the second config (r2notary) reads `worker/.dev.vars` when that file exists and
+  ignores `F` (wrangler 4.147: `getVarsForDev` loads `.dev.vars` next to a config whenever it gets
+  no env files, and only the first config gets them; checked by starting both forms and reading
+  which file wrangler reports using). D5.7 said `--env-file` keeps a developer's `.dev.vars` out;
+  that held only because this repository has no `worker/.dev.vars`. Anyone who followed the
+  quickstart (which creates one) and then ran `npm run conformance` or a benchmark got their own
+  secrets in r2notary: the harness's read token was refused and conformance could not start
+  (reproduced in a fresh copy with a `.dev.vars`).
+- **Fix:** `scripts/lib/dev.ts` runs every config from a copy in the harness's temporary directory,
+  with its relative paths (`main`, `$schema`, `assets.directory`, `build.watch_dir`) made absolute,
+  so no `.dev.vars` is next to the config wrangler reads. Conformance then passed in the copy that
+  has both `worker/.dev.vars` and `witness/.dev.vars`. The README's own multi-config walkthrough
+  appends its settings to `worker/.dev.vars` (after a backup) instead of using `--env-file`.
+- The benchmarks were run before this fix, from a repository without `.dev.vars`, so they were not
+  affected; the launcher change does not touch the measured code.
+
+### D8.15 Verification of this milestone
+
+- `npm test` (610 tests: core, dashboard, worker, witness), lint, typecheck, format, Go vet,
+  staticcheck and tests; `npm run conformance`: all 239 checks (207 from M5-M7, 32 in the M8
+  stage), in the repository and in a fresh copy with developer `.dev.vars` files present.
+- **README, verbatim:** the commands were extracted from `README.md` and run in fresh copies of the
+  working tree (only `npm ci` and the Go build beforehand): the M7 quickstart, and the new witness
+  and blinding walkthrough. The first runs found D8.14 and a `sleep 10` that raced the first
+  checkpoint (a notification waits up to 5 s for its queue batch, then up to 5 s for the interval;
+  now `sleep 15`, as in the quickstart). The final run passed end to end. The browser step was
+  checked separately in headless Chromium (D8.3).
+- All benchmarks re-run (D8.13); every figure in `README.md` and `docs/` was updated from the new
+  result files.
+
+### D8.16 Not done in M8
+
+- Gateway mode (D8.10) and multi-bucket / sharded state (D8.11).
+- ML-DSA-44 cosignatures (D8.4); periodic re-witnessing, and with it a freshness check in the CLI
+  and the browser (D8.7).
+- Nothing M8 adds has run on Cloudflare: no deployed witness, no real public blinded log, no
+  Workers Static Assets deployment. As before, every remote step needs the owner's approval
+  (`docs/OPERATIONS.md` §11-§13).
+- The dashboard's DOM code has no automated tests (its verifier has); the headless-browser check
+  was manual.
+- A witness's `evidence` is readable only through the Durable Object, not over HTTP.
+- The browser verifier shares `packages/core` with the writer; an independent browser verifier
+  (or running a third-party tlog client in conformance) was not attempted.

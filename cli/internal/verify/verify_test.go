@@ -3,16 +3,19 @@ package verify
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/mod/sumdb/tlog"
 
+	"github.com/isaiahfoster/r2notary/cli/internal/cosign"
 	"github.com/isaiahfoster/r2notary/cli/internal/testlog"
 	"github.com/isaiahfoster/r2notary/cli/internal/tilefetch"
 	"github.com/isaiahfoster/r2notary/cli/internal/verr"
@@ -329,5 +332,106 @@ func TestConsistency(t *testing.T) {
 	empty := &Checkpoint{Origin: origin, Tree: tlog.Tree{N: 0, Hash: emptyRoot}}
 	if err := lg.Consistency(ctx, empty, open(notes[0])); err != nil {
 		t.Errorf("empty -> 1: %v", err)
+	}
+}
+
+// witnessKey is a cosigner key pair from a fixed seed, with its signer at a fixed time.
+func witnessKey(t *testing.T, name string, seed byte, at int64) (vkey string, s note.Signer, v note.Verifier) {
+	t.Helper()
+	skey, vkey, err := cosign.GenerateKey(bytes.NewReader(bytes.Repeat([]byte{seed}, 32)), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := cosign.NewSigner(skey, func() time.Time { return time.Unix(at, 0) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := cosign.NewVerifier(vkey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return vkey, signer, verifier
+}
+
+// zeroTimeSigner cosigns with timestamp 0, which cosign.Signer refuses to do.
+type zeroTimeSigner struct {
+	note.Verifier
+	key ed25519.PrivateKey
+}
+
+func (z zeroTimeSigner) Sign(msg []byte) ([]byte, error) {
+	m := append([]byte("cosignature/v1\ntime 0\n"), msg...)
+	return append(make([]byte, 8), ed25519.Sign(z.key, m)...), nil
+}
+
+func TestOpenWitnessed(t *testing.T) {
+	_, s1, w1 := witnessKey(t, "w1.example", 1, 1_791_000_000)
+	_, s2, w2 := witnessKey(t, "w2.example", 2, 1_791_000_100)
+	_, s3, _ := witnessKey(t, "w3.example", 3, 1_791_000_200)
+	l := testlog.New(t, origin)
+	l.Cosigners = []note.Signer{s1, s2, s3}
+	msg := l.Append(t, testlog.Entries(0, 10)...)
+	lv := l.Verifier(t)
+
+	cp, err := OpenWitnessed(msg, lv, origin, WitnessPolicy{Witnesses: []note.Verifier{w1, w2}, Quorum: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprint(cp.Cosignatures)
+	want := fmt.Sprint([]Cosignature{
+		{Name: "w1.example", KeyHash: w1.KeyHash(), Time: time.Unix(1_791_000_000, 0).UTC()},
+		{Name: "w2.example", KeyHash: w2.KeyHash(), Time: time.Unix(1_791_000_100, 0).UTC()},
+	})
+	if got != want {
+		t.Fatalf("cosignatures %s, want %s (w3 is not trusted and must be ignored)", got, want)
+	}
+
+	// Not enough cosignatures: a policy error, not a verification failure.
+	_, _, w4 := witnessKey(t, "w4.example", 4, 1)
+	_, err = OpenWitnessed(msg, lv, origin, WitnessPolicy{Witnesses: []note.Verifier{w1, w4}, Quorum: 2})
+	var qe *QuorumError
+	if !errors.As(err, &qe) || qe.Have != 1 || qe.Want != 2 || verr.IsFailure(err) {
+		t.Fatalf("quorum 2 with one cosignature: %v", err)
+	}
+	// Without a policy the cosignatures are ignored, as by any verifier that does not know them.
+	if _, err := OpenCheckpoint(msg, lv, origin); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenWitnessedRejects(t *testing.T) {
+	_, s1, w1 := witnessKey(t, "w1.example", 1, 1_791_000_000)
+	policy := WitnessPolicy{Witnesses: []note.Verifier{w1}, Quorum: 1}
+	l := testlog.New(t, origin)
+	text := origin + "\n1\n" + b64(make([]byte, 32)) + "\n"
+
+	// A cosignature alone, without the log's signature, verifies under note.Open (one known key
+	// signed), so OpenWitnessed must insist on the log's own.
+	only, err := note.Sign(&note.Note{Text: text}, s1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenWitnessed(only, l.Verifier(t), origin, policy); !verr.IsFailure(err) {
+		t.Fatalf("cosignature without the log signature: %v", err)
+	}
+
+	// A trusted witness's cosignature that does not verify is a failure.
+	l.Cosigners = []note.Signer{s1}
+	msg := l.Append(t, testlog.Entries(0, 3)...)
+	bad := []byte(strings.Replace(string(msg), "\n3\n", "\n4\n", 1))
+	if _, err := OpenWitnessed(bad, l.Verifier(t), origin, WitnessPolicy{Witnesses: []note.Verifier{w1}}); !verr.IsFailure(err) {
+		t.Fatalf("tampered cosigned checkpoint: %v", err)
+	}
+
+	// A cosignature with time 0 does not count (tlog-witness requires a time).
+	_, _, w5 := witnessKey(t, "w5.example", 5, 1)
+	z := zeroTimeSigner{Verifier: w5, key: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{5}, 32))}
+	l2 := testlog.New(t, origin)
+	l2.Cosigners = []note.Signer{z}
+	zero := l2.Append(t, testlog.Entries(0, 3)...)
+	_, err = OpenWitnessed(zero, l2.Verifier(t), origin, WitnessPolicy{Witnesses: []note.Verifier{w5}, Quorum: 1})
+	var qe *QuorumError
+	if !errors.As(err, &qe) || qe.Have != 0 {
+		t.Fatalf("zero-time cosignature counted: %v", err)
 	}
 }

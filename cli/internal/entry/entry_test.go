@@ -17,6 +17,10 @@ func TestParse(t *testing.T) {
 	if !snap.IsSnapshot() || snap.IsWrite() {
 		t.Errorf("snapshot: %+v", snap)
 	}
+	blinded := Parse([]byte(`{"action":"PutObject","keyHmac":"abc","type":"object.event","v":1}`))
+	if !blinded.IsWrite() || blinded.HasKey || !blinded.HasKeyHmac || blinded.KeyHmac != "abc" {
+		t.Errorf("blinded: %+v", blinded)
+	}
 	scan := Parse([]byte(`{"phase":"start","scanId":"s","type":"audit.scan","v":1}`))
 	if !scan.Known() || scan.HasKey {
 		t.Errorf("scan: %+v", scan)

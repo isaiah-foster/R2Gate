@@ -4,6 +4,8 @@ coverage
 .wrangler
 package-lock.json
 worker/worker-configuration.d.ts
+witness/worker-configuration.d.ts
 PLAN.md
 bench/results
 cli
+dashboard/public/app.js

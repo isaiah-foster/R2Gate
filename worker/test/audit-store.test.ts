@@ -25,7 +25,7 @@ const SHA_B = 'b'.repeat(64);
 let unique = 0;
 
 function ctx(now: number): ScanContext {
-  return { now, ttlMs: 86_400_000, bucket: BUCKET };
+  return { now, ttlMs: 86_400_000, bucket: BUCKET, names: null };
 }
 
 function obj(key: string, o: Partial<ListedObject> = {}): ListedObject {

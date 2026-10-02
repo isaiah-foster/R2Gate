@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/mod/sumdb/note"
 
+	"github.com/isaiahfoster/r2notary/cli/internal/blind"
 	"github.com/isaiahfoster/r2notary/cli/internal/entry"
 	"github.com/isaiahfoster/r2notary/cli/internal/monitor"
 	"github.com/isaiahfoster/r2notary/cli/internal/verify"
@@ -86,10 +87,19 @@ func cmdCheckpoint(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return exitFor(stderr, err)
 		}
 	}
-	// Checkpoints carry no time: the format has none, and R2Notary adds no extension lines.
+	// A checkpoint carries no time of its own (R2Notary writes no extension lines); witness
+	// cosignatures do: each is a witness's statement that this was the latest tree at that time.
 	fmt.Fprintf(stdout, "origin %s\nsize %d\nroot %s\n", cp.Origin, cp.Tree.N,
 		base64.StdEncoding.EncodeToString(cp.Tree.Hash[:]))
-	fmt.Fprintf(stderr, "verified: signature by %s, origin %s\n", l.Verifier.Name(), cp.Origin)
+	for _, c := range cp.Cosignatures {
+		fmt.Fprintf(stdout, "cosignature %s %s\n", c.Name, c.Time.Format(time.RFC3339))
+	}
+	fmt.Fprintf(stderr, "verified: signature by %s, origin %s", l.Verifier.Name(), cp.Origin)
+	if len(l.Witness.Witnesses) > 0 {
+		fmt.Fprintf(stderr, ", %d of %d witnesses cosigned (%d required)",
+			len(cp.Cosignatures), len(l.Witness.Witnesses), l.Witness.Quorum)
+	}
+	fmt.Fprintln(stderr)
 	return exitOK
 }
 
@@ -100,6 +110,7 @@ func cmdInclusion(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	index := fs.Int64("index", -1, "verify the entry at this index")
 	key := fs.String("key", "", "verify every entry naming this object key")
 	api := fs.String("api", "", "with --key: ask this deployment's lookup API (https://host) where the key's entries are, instead of scanning the whole log")
+	blindingFile := fs.String("blinding-key-file", "", "with --key on a log that blinds key names: file holding its KEY_BLINDING_KEY (else $"+blindingEnv+")")
 	if c := parse(fs, args, stderr); c >= 0 {
 		return c
 	}
@@ -128,32 +139,73 @@ func cmdInclusion(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return exitOK
 	}
 
+	q, err := newKeyQuery(*key, *blindingFile)
+	if err != nil {
+		return exitFor(stderr, err)
+	}
 	var found int
 	if *api == "" {
-		found, err = keyByScan(ctx, l, *key, stdout, stderr)
+		found, err = keyByScan(ctx, l, q, stdout, stderr)
 	} else {
-		found, err = keyByLookup(ctx, l, *api, *key, stdout, stderr)
+		found, err = keyByLookup(ctx, l, *api, q, stdout, stderr)
 	}
 	if err != nil {
 		return exitFor(stderr, err)
 	}
 	if found == 0 {
-		fmt.Fprintf(stderr, "no entries for key %q\n", *key)
+		fmt.Fprintf(stderr, "no entries for key %q\n", q.key)
 		return exitNegative
 	}
 	return exitOK
 }
 
+// keyQuery is an object key and, given the log's blinding key, the keyHmac a blinded log names it
+// by (M8).
+type keyQuery struct {
+	key, hmac string
+}
+
+func newKeyQuery(key, blindingFile string) (keyQuery, error) {
+	secret := os.Getenv(blindingEnv)
+	if blindingFile != "" {
+		b, err := os.ReadFile(blindingFile)
+		if err != nil {
+			return keyQuery{}, err
+		}
+		secret = string(b)
+	}
+	if secret == "" {
+		return keyQuery{key: key}, nil
+	}
+	k, err := blind.ParseKey(secret)
+	if err != nil {
+		return keyQuery{}, usageErr("blinding key: %v", err)
+	}
+	return keyQuery{key: key, hmac: blind.Name(k, key)}, nil
+}
+
+// matches reports whether an entry names the queried key, in plain or blinded form.
+func (q keyQuery) matches(info entry.Info) bool {
+	if info.HasKeyHmac {
+		return q.hmac != "" && info.KeyHmac == q.hmac
+	}
+	return info.HasKey && info.Key == q.key
+}
+
 // keyByScan verifies every entry of the log and reports those naming key. Nothing is trusted, and
 // nothing can be hidden, but it reads the whole log.
-func keyByScan(ctx context.Context, l *verify.Log, key string, stdout, stderr io.Writer) (int, error) {
+func keyByScan(ctx context.Context, l *verify.Log, q keyQuery, stdout, stderr io.Writer) (int, error) {
 	cp, err := l.Checkpoint(ctx)
 	if err != nil {
 		return 0, err
 	}
-	found := 0
+	found, blinded := 0, 0
 	err = l.Entries(ctx, cp, 0, cp.Tree.N, func(i int64, e []byte) error {
-		if info := entry.Parse(e); info.HasKey && info.Key == key {
+		info := entry.Parse(e)
+		if info.HasKeyHmac {
+			blinded++
+		}
+		if q.matches(info) {
 			found++
 			fmt.Fprintf(stdout, "%s\n", entry.Line(i, e))
 		}
@@ -163,6 +215,9 @@ func keyByScan(ctx context.Context, l *verify.Log, key string, stdout, stderr io
 		return 0, err
 	}
 	fmt.Fprintf(stderr, "verified: all %d entries of the tree of size %d; %d name the key\n", cp.Tree.N, cp.Tree.N, found)
+	if blinded > 0 && q.hmac == "" {
+		fmt.Fprintf(stderr, "%d entries name keys by keyHmac: this log blinds key names; pass its blinding key ($%s or --blinding-key-file)\n", blinded, blindingEnv)
+	}
 	return found, nil
 }
 
@@ -181,7 +236,7 @@ const maxLookupPage = 16 << 20
 // keyByLookup asks the deployment's lookup API which indexes name key, then proves each one. The
 // API is an unverified index: it cannot make the CLI accept a false entry, but it can leave
 // entries out, which only a scan would notice.
-func keyByLookup(ctx context.Context, l *verify.Log, api, key string, stdout, stderr io.Writer) (int, error) {
+func keyByLookup(ctx context.Context, l *verify.Log, api string, q keyQuery, stdout, stderr io.Writer) (int, error) {
 	base, err := url.Parse(api)
 	if err != nil || (base.Scheme != "https" && base.Scheme != "http") || base.Host == "" {
 		return 0, usageErr("--api %q must be an absolute http(s) URL", api)
@@ -190,11 +245,15 @@ func keyByLookup(ctx context.Context, l *verify.Log, api, key string, stdout, st
 	after := int64(-1)
 	for {
 		u := base.JoinPath("api", "v1", "lookup")
-		q := url.Values{"key": {key}}
-		if after >= 0 {
-			q.Set("after", strconv.FormatInt(after, 10))
+		// A blinded log's API looks keys up by keyHmac only (it never sees the key).
+		v := url.Values{"key": {q.key}}
+		if q.hmac != "" {
+			v = url.Values{"keyHmac": {q.hmac}}
 		}
-		u.RawQuery = q.Encode()
+		if after >= 0 {
+			v.Set("after", strconv.FormatInt(after, 10))
+		}
+		u.RawQuery = v.Encode()
 		body, err := l.Client.GetURL(ctx, u.String(), maxLookupPage)
 		if err != nil {
 			return 0, err
@@ -229,7 +288,7 @@ func keyByLookup(ctx context.Context, l *verify.Log, api, key string, stdout, st
 		if err != nil {
 			return 0, err
 		}
-		if info := entry.Parse(inc.Entry); !info.HasKey || info.Key != key {
+		if !q.matches(entry.Parse(inc.Entry)) {
 			return 0, verr.Failf("lookup API returned index %d, whose entry does not name the key", i)
 		}
 		fmt.Fprintf(stdout, "%s\n", entry.Line(i, inc.Entry))

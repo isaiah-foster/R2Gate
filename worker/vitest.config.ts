@@ -10,6 +10,8 @@ const token = (): string =>
   Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
 process.env.ADMIN_TOKEN = token();
 process.env.READ_TOKEN = token();
+// Unused while KEY_BLINDING is "false" (the committed value); blinding tests pass their own.
+process.env.KEY_BLINDING_KEY = token();
 
 export default defineProject({
   plugins: [

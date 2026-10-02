@@ -13,10 +13,17 @@
 //   counters    ingest counters shown by /status (v2)
 //   scrub_state last published deep-scrub observation per key (v3)
 //   scans, scan_candidates, scan_findings   auditor state (v3; worker/src/audit/store.ts)
+//   witnesses   per witness: the size it last cosigned, and the last error (v4, M8)
+//
+// Key blinding (v4, M8): a blinded entry names its object by keyHmac only, but the expected-state
+// view and the auditor work on real keys. So `entries.object_key` keeps the plaintext key of a
+// blinded entry (private: never published, dropped with the row), `objects.key_hmac` keeps the
+// name the log uses, and key_index is keyed by that name, which is what lookups receive.
 
 import {
   TILE_WIDTH,
   decodeEntry,
+  loggedName,
   type DecodedEntry,
   type LogState,
   type TreeState,
@@ -25,6 +32,11 @@ import {
 export interface AppendItem {
   readonly eventId: string;
   readonly entry: Uint8Array;
+  /**
+   * The plaintext key of a blinded entry (M8), kept privately so the expected-state view can be
+   * maintained; absent for an entry that names its key itself or names none.
+   */
+  readonly key?: string;
 }
 
 export interface AppendResult {
@@ -72,6 +84,8 @@ export interface ObjectState {
   readonly size: number | null;
   /** RFC 3339 time of the entry that set this state (eventTime, or uploaded for a snapshot). */
   readonly eventTime: string;
+  /** How the log names the key on a blinded log (M8); null on a log that is not blinded. */
+  readonly keyHmac: string | null;
   /** Log index of that entry. */
   readonly seq: number;
   readonly deleted: boolean;
@@ -94,6 +108,15 @@ export interface ScrubState {
   readonly sha256: string;
   readonly observedAt: string;
   readonly seq: number;
+}
+
+export interface WitnessStatus {
+  readonly vkey: string;
+  /** Size of the last checkpoint it cosigned for this log, or null if it never has. */
+  readonly size: number | null;
+  readonly cosignedAt: number | null;
+  readonly failedAt: number | null;
+  readonly lastError: string | null;
 }
 
 export class StoreError extends Error {
@@ -175,6 +198,19 @@ const MIGRATIONS: readonly (readonly string[])[] = [
        entry BLOB NOT NULL,
        PRIMARY KEY(scan_id, seq))`,
   ],
+  // v4 (M8): witness progress. `size` is only a hint for the next submission (a witness answers
+  // 409 with its real size when it is wrong); the times and error are for /status. Key blinding:
+  // the plaintext key of a blinded entry, and the blinded name of each key in the view.
+  [
+    `ALTER TABLE entries ADD COLUMN object_key TEXT`,
+    `ALTER TABLE objects ADD COLUMN key_hmac TEXT`,
+    `CREATE TABLE witnesses(
+       vkey TEXT PRIMARY KEY,
+       size INTEGER,
+       cosigned_at INTEGER,
+       failed_at INTEGER,
+       last_error TEXT)`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -218,7 +254,10 @@ interface ObjectRow {
   event_time: string;
   seq: number;
   deleted: number;
+  key_hmac: string | null;
 }
+
+const OBJECT_COLUMNS = 'key, etag, size, event_time, seq, deleted, key_hmac';
 
 function toObjectState(r: ObjectRow): ObjectState {
   return {
@@ -226,20 +265,34 @@ function toObjectState(r: ObjectRow): ObjectState {
     etag: r.etag,
     size: r.size,
     eventTime: r.event_time,
+    keyHmac: r.key_hmac,
     seq: r.seq,
     deleted: r.deleted !== 0,
   };
 }
 
-/** The key an entry is about, if any (indexed in key_index). */
-function entryKey(d: DecodedEntry): string | null {
+/**
+ * The name an entry is indexed under (key_index: what lookups receive) and the real key it is
+ * about (the objects view), if it names an object. A blinded entry's real key comes from the
+ * `object_key` kept with it.
+ */
+function entryNames(
+  d: DecodedEntry,
+  objectKey: string | null,
+): { logged: string; key: string; keyHmac: string | null } | null {
   if (!d.known) return null;
-  return d.entry.type === 'audit.scan' ? null : d.entry.key;
+  const n = loggedName(d.entry);
+  if (n === null) return null;
+  if (!n.blinded) return { logged: n.name, key: n.name, keyHmac: null };
+  if (objectKey === null) throw new StoreError('a blinded entry was stored without its key');
+  return { logged: n.name, key: objectKey, keyHmac: n.name };
 }
 
 export class SequencerStore {
   readonly #storage: DurableObjectStorage;
   readonly #sql: SqlStorage;
+  #expectedBlinding: string | null = null;
+  #blindingChecked = false;
 
   constructor(storage: DurableObjectStorage) {
     this.#storage = storage;
@@ -305,6 +358,46 @@ export class SequencerStore {
     return v === undefined || v === null ? null : int(v, 'meta.last_publish_at');
   }
 
+  /**
+   * How this log names keys (M8): "off", or "hmac-sha256:<fingerprint of the secret>". Null for a
+   * log that has not recorded it; a log with entries but no record predates blinding ("off").
+   */
+  keyBlinding(): string | null {
+    const v = this.#meta('key_blinding');
+    if (typeof v === 'string') return v;
+    return this.nextSeq() > 0 ? 'off' : null;
+  }
+
+  /**
+   * Sets the blinding state the configuration implies (worker/src/blinding.ts). From then on, the
+   * first append records it, and every append checks it, inside the append's transaction: a log
+   * whose entries name keys one way never gets entries that name them another way.
+   */
+  expectKeyBlinding(state: string): void {
+    if (state !== this.#expectedBlinding) this.#blindingChecked = false;
+    this.#expectedBlinding = state;
+  }
+
+  #checkKeyBlinding(): void {
+    const want = this.#expectedBlinding;
+    // Once checked, the record cannot change under this instance (only this method writes it), so
+    // later appends skip the read: the check costs no rows read per append (D8.9).
+    if (want === null || this.#blindingChecked) return;
+    const have = this.keyBlinding();
+    if (have === null) {
+      // Not cached as checked: if this transaction rolls back, the record goes with it.
+      this.#setMeta('key_blinding', want);
+      return;
+    }
+    if (have !== want) {
+      throw new StoreError(
+        `this log's key blinding is ${have}, but the configuration says ${want}: ` +
+          'KEY_BLINDING and KEY_BLINDING_KEY cannot change for an existing log',
+      );
+    }
+    this.#blindingChecked = true;
+  }
+
   lastError(): string | null {
     const v = this.#meta('last_error');
     return typeof v === 'string' ? v : null;
@@ -358,10 +451,12 @@ export class SequencerStore {
    * own state (the auditor, worker/src/audit/store.ts). The caller holds the transaction.
    */
   insertInTransaction(items: readonly AppendItem[], now: number, ttlMs: number): AppendResult {
+    if (items.length > 0) this.#checkKeyBlinding();
     let next = this.nextSeq();
     let firstSeq: number | null = null;
     let duplicates = 0;
-    for (const { eventId, entry } of items) {
+    for (const item of items) {
+      const { eventId, entry } = item;
       const seen = this.#sql
         .exec<{ expires_at: number }>('SELECT expires_at FROM seen WHERE event_id = ?', eventId)
         .next();
@@ -371,10 +466,11 @@ export class SequencerStore {
       }
       firstSeq ??= next;
       this.#sql.exec(
-        'INSERT INTO entries(seq, entry, received_at) VALUES (?, ?, ?)',
+        'INSERT INTO entries(seq, entry, received_at, object_key) VALUES (?, ?, ?, ?)',
         next,
         entry,
         now,
+        item.key ?? null,
       );
       this.#sql.exec(
         'INSERT OR REPLACE INTO seen(event_id, seq, expires_at) VALUES (?, ?, ?)',
@@ -419,22 +515,36 @@ export class SequencerStore {
 
   /** Entries [from, to), which must all be present. */
   readEntries(from: number, to: number): Uint8Array[] {
-    const out: Uint8Array[] = [];
-    for (const row of this.#sql.exec<{ seq: number; entry: ArrayBuffer }>(
-      'SELECT seq, entry FROM entries WHERE seq >= ? AND seq < ? ORDER BY seq',
+    return this.readBatch(from, to).entries;
+  }
+
+  /**
+   * Entries [from, to) and, aligned with them, the private key of each blinded one (null for the
+   * rest): what a publication commits. One read of the rows publication needs anyway.
+   */
+  readBatch(from: number, to: number): { entries: Uint8Array[]; keys: (string | null)[] } {
+    const entries: Uint8Array[] = [];
+    const keys: (string | null)[] = [];
+    for (const row of this.#sql.exec<{
+      seq: number;
+      entry: ArrayBuffer;
+      object_key: string | null;
+    }>(
+      'SELECT seq, entry, object_key FROM entries WHERE seq >= ? AND seq < ? ORDER BY seq',
       from,
       to,
     )) {
-      if (row.seq !== from + out.length)
+      if (row.seq !== from + entries.length)
         throw new StoreError(`entry ${String(row.seq)} out of place`);
-      out.push(blob(row.entry, `entry ${String(row.seq)}`));
+      entries.push(blob(row.entry, `entry ${String(row.seq)}`));
+      keys.push(row.object_key);
     }
-    if (out.length !== to - from) {
+    if (entries.length !== to - from) {
       throw new StoreError(
-        `expected entries [${String(from)}, ${String(to)}), found ${String(out.length)}`,
+        `expected entries [${String(from)}, ${String(to)}), found ${String(entries.length)}`,
       );
     }
-    return out;
+    return { entries, keys };
   }
 
   /** The writer state at published_size: partial tiles plus the partial bundle's entries. */
@@ -463,6 +573,7 @@ export class SequencerStore {
     tree: TreeState,
     entries: readonly Uint8Array[],
     now: number,
+    keys: readonly (string | null)[] = [],
   ): void {
     this.#storage.transactionSync(() => {
       const current = this.publishedSize();
@@ -477,7 +588,7 @@ export class SequencerStore {
         this.#sql.exec('INSERT INTO tile_state(level, hashes) VALUES (?, ?)', level, hashes);
       });
       entries.forEach((e, i) => {
-        this.#applyEntry(fromSize + i, e);
+        this.#applyEntry(fromSize + i, e, keys[i] ?? null);
       });
       this.#setMeta('published_size', tree.size);
       this.#setMeta('publishing_size', null);
@@ -492,11 +603,12 @@ export class SequencerStore {
    * an event older (by eventTime) than the stored state for its key does not replace it, which
    * tolerates out-of-order delivery; ties go to the later seq.
    */
-  #applyEntry(seq: number, bytes: Uint8Array): void {
+  #applyEntry(seq: number, bytes: Uint8Array, objectKey: string | null): void {
     const decoded = decodeEntry(bytes);
-    const key = entryKey(decoded);
-    if (key === null || !decoded.known) return;
-    this.#sql.exec('INSERT OR IGNORE INTO key_index(key, seq) VALUES (?, ?)', key, seq);
+    const names = entryNames(decoded, objectKey);
+    if (names === null || !decoded.known) return;
+    const { key, keyHmac } = names;
+    this.#sql.exec('INSERT OR IGNORE INTO key_index(key, seq) VALUES (?, ?)', names.logged, seq);
 
     const e = decoded.entry;
     let state: { etag: string | null; size: number | null; time: string; deleted: number };
@@ -527,11 +639,12 @@ export class SequencerStore {
       return; // findings are indexed but do not change the expected state
     }
     this.#sql.exec(
-      `INSERT INTO objects(key, etag, size, event_time, event_ms, seq, deleted)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO objects(key, etag, size, event_time, event_ms, seq, deleted, key_hmac)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET
          etag = excluded.etag, size = excluded.size, event_time = excluded.event_time,
-         event_ms = excluded.event_ms, seq = excluded.seq, deleted = excluded.deleted
+         event_ms = excluded.event_ms, seq = excluded.seq, deleted = excluded.deleted,
+         key_hmac = excluded.key_hmac
        WHERE excluded.event_ms >= objects.event_ms`,
       key,
       state.etag,
@@ -540,13 +653,14 @@ export class SequencerStore {
       eventMillis(state.time),
       seq,
       state.deleted,
+      keyHmac,
     );
   }
 
   /** Expected state for keys in (after, through], in key order (SQLite BINARY = UTF-8 byte order). */
   objectStates(range: ObjectRange): ObjectState[] {
     const rows = this.#sql.exec<ObjectRow>(
-      `SELECT key, etag, size, event_time, seq, deleted FROM objects
+      `SELECT ${OBJECT_COLUMNS} FROM objects
        WHERE (?1 IS NULL OR key > ?1) AND (?2 IS NULL OR key <= ?2) AND (?4 = 0 OR deleted = 0)
        ORDER BY key LIMIT ?3`,
       range.after ?? null,
@@ -560,10 +674,7 @@ export class SequencerStore {
   /** Expected state of one key, live or deleted, or null if the log has never named it. */
   objectState(key: string): ObjectState | null {
     const rows = this.#sql
-      .exec<ObjectRow>(
-        'SELECT key, etag, size, event_time, seq, deleted FROM objects WHERE key = ?',
-        key,
-      )
+      .exec<ObjectRow>(`SELECT ${OBJECT_COLUMNS} FROM objects WHERE key = ?`, key)
       .toArray();
     const r = rows[0];
     return r === undefined ? null : toObjectState(r);
@@ -581,7 +692,10 @@ export class SequencerStore {
       : { etag: r.etag, size: r.size, sha256: r.sha256, observedAt: r.observed_at, seq: r.seq };
   }
 
-  /** Log indexes of published entries naming `key` after index `after`, oldest first. */
+  /**
+   * Log indexes of published entries naming `key` after index `after`, oldest first. On a blinded
+   * log `key` is the keyHmac, the name the entries use.
+   */
   lookup(key: string, after: number | null, limit: number): number[] {
     return this.#sql
       .exec<{ seq: number }>(
@@ -592,6 +706,53 @@ export class SequencerStore {
       )
       .toArray()
       .map((r) => r.seq);
+  }
+
+  // ---- witnesses (M8) -------------------------------------------------------------------------
+
+  witnessSize(vkey: string): number | null {
+    const r = this.#sql
+      .exec<{ size: number | null }>('SELECT size FROM witnesses WHERE vkey = ?', vkey)
+      .toArray()[0];
+    return r?.size ?? null;
+  }
+
+  recordWitnessSuccess(vkey: string, size: number, at: number): void {
+    this.#sql.exec(
+      `INSERT INTO witnesses(vkey, size, cosigned_at) VALUES (?1, ?2, ?3)
+       ON CONFLICT(vkey) DO UPDATE SET size = ?2, cosigned_at = ?3`,
+      vkey,
+      size,
+      at,
+    );
+  }
+
+  recordWitnessFailure(vkey: string, error: string, at: number): void {
+    this.#sql.exec(
+      `INSERT INTO witnesses(vkey, failed_at, last_error) VALUES (?1, ?2, ?3)
+       ON CONFLICT(vkey) DO UPDATE SET failed_at = ?2, last_error = ?3`,
+      vkey,
+      at,
+      error,
+    );
+  }
+
+  witnessStatus(vkey: string): WitnessStatus {
+    const r = this.#sql
+      .exec<{
+        size: number | null;
+        cosigned_at: number | null;
+        failed_at: number | null;
+        last_error: string | null;
+      }>('SELECT size, cosigned_at, failed_at, last_error FROM witnesses WHERE vkey = ?', vkey)
+      .toArray()[0];
+    return {
+      vkey,
+      size: r?.size ?? null,
+      cosignedAt: r?.cosigned_at ?? null,
+      failedAt: r?.failed_at ?? null,
+      lastError: r?.last_error ?? null,
+    };
   }
 
   /** When the oldest unpublished entry was accepted (ms), or null if none is pending. */

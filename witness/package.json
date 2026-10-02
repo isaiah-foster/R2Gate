@@ -1,0 +1,15 @@
+{
+  "name": "@r2notary/witness",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "types": "wrangler types",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@r2notary/core": "*"
+  }
+}

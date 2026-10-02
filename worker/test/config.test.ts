@@ -54,3 +54,55 @@ it('accepts sample rates written as decimals', () => {
     expect(parseConfig({ ...env, DEEP_SCRUB_SAMPLE_RATE: v }).deepScrubSampleRate).toBe(want);
   }
 });
+
+describe('WITNESSES and WITNESS_QUORUM (M8)', () => {
+  // A cosigner key (type 0x04) and a log key (type 0x01), both fixed test data.
+  const W = 'witness.example.com/vector+416f103d+BK/QmJFVP3SKJOqAMhFxBQPtylo3sjwWibyFDAlZKK8B';
+  const LOGKEY = 'example.com/vector-log+4516a1da+ARGkVJ4QEa2MOOLGBO6i7NVSJ1FQ97tIX+w+Ku0RZ6Em';
+  const one = (o: Record<string, unknown>) => JSON.stringify([o]);
+
+  it('defaults to no witnesses', () => {
+    expect(parseConfig(env)).toMatchObject({ witnesses: [], witnessQuorum: 0 });
+  });
+
+  it('parses witnesses and drops a trailing slash from the URL', () => {
+    const c = parseConfig({
+      ...env,
+      WITNESSES: one({ vkey: W, url: 'https://witness.example.com/w1/' }),
+      WITNESS_QUORUM: '1',
+    });
+    expect(c.witnesses).toEqual([{ vkey: W, url: 'https://witness.example.com/w1' }]);
+    expect(c.witnessQuorum).toBe(1);
+    // A witness running locally under wrangler dev.
+    const local = parseConfig({
+      ...env,
+      WITNESSES: one({ vkey: W, url: 'http://127.0.0.1:8788' }),
+    });
+    expect(local.witnesses[0]?.url).toBe('http://127.0.0.1:8788');
+  });
+
+  it.each([
+    ['not JSON', { WITNESSES: 'nope' }],
+    ['an object', { WITNESSES: '{}' }],
+    [
+      'a log key instead of a cosigner key',
+      { WITNESSES: one({ vkey: LOGKEY, url: 'https://w.example' }) },
+    ],
+    ['a malformed key', { WITNESSES: one({ vkey: 'w+123+abc', url: 'https://w.example' }) }],
+    ['plain http to a remote host', { WITNESSES: one({ vkey: W, url: 'http://w.example' }) }],
+    ['a URL with a query', { WITNESSES: one({ vkey: W, url: 'https://w.example/?a=1' }) }],
+    ['an unknown field', { WITNESSES: one({ vkey: W, url: 'https://w.example', x: 1 }) }],
+    [
+      'the same witness twice',
+      {
+        WITNESSES: JSON.stringify([
+          { vkey: W, url: 'https://a.example' },
+          { vkey: W, url: 'https://b.example' },
+        ]),
+      },
+    ],
+    ['a quorum above the number of witnesses', { WITNESS_QUORUM: '1' }],
+  ])('rejects %s', (_, override) => {
+    expect(() => parseConfig({ ...env, ...override })).toThrow(ConfigError);
+  });
+});

@@ -122,18 +122,29 @@ try {
   const publishResults: Record<string, unknown>[] = [];
   for (const k of intList(values['publish-sizes'])) {
     const ms: number[] = [];
-    for (let i = 0; i < Math.max(10, Math.floor(SAMPLES / 2)); i++) {
+    // With k = BATCH_MAX_ENTRIES (1000) the alarm is due as soon as the entries are appended, and
+    // can finish the publication before the timed admin call arrives (which then has nothing to
+    // do). Such samples are discarded and counted; if the alarm has only started, the admin call
+    // joins it (single flight) and the sample stands.
+    let discarded = 0;
+    while (ms.length < Math.max(10, Math.floor(SAMPLES / 2))) {
       for (let left = k; left > 0; left -= Math.min(left, 1000)) await append(Math.min(left, 1000));
       const t = nowMs();
       const r = (await publish()) as { previousSize: number; size: number };
-      ms.push(nowMs() - t);
+      const elapsed = nowMs() - t;
+      if (r.size === r.previousSize && (await status()).pending === 0 && discarded < 20) {
+        discarded++;
+        continue;
+      }
       if (r.size - r.previousSize !== k) throw new Error(`published ${JSON.stringify(r)}`);
+      ms.push(elapsed);
     }
     const s = summarize(ms);
     publishResults.push({
       entriesPerPublication: k,
       ms: s,
       entriesPerSecondAtMedian: Math.round((k / s.median) * 1000),
+      discardedAlarmPublished: discarded,
     });
     console.log(`publish ${String(k)}: median ${String(s.median)} ms`);
   }

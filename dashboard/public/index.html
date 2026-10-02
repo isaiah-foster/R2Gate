@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>R2Notary verifier</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>R2Notary verifier</h1>
+      <p class="lede">
+        Checks this log in your browser: the checkpoint signature, every entry shown (an inclusion
+        proof computed here from the log's tiles), and that the log only grew since your last visit
+        (a consistency proof). The server is trusted to serve bytes, nothing else.
+      </p>
+      <p class="note">
+        This page is served by the log's own Worker, so a dishonest server could also serve a
+        dishonest page. To remove that trust too, save this page and open the copy from your own
+        machine: the log and its API allow cross-origin reads.
+      </p>
+    </header>
+
+    <main>
+      <section aria-labelledby="settings-h">
+        <h2 id="settings-h">Trust settings</h2>
+        <form id="settings" autocomplete="off">
+          <label
+            >Server
+            <input name="server" type="url" placeholder="https://r2notary.example.com" required />
+          </label>
+          <label
+            >Log name
+            <input name="log" placeholder="read from /api/v1/status if empty" />
+          </label>
+          <label class="wide"
+            >Verifier key (obtain it out of band, never from the log)
+            <input name="vkey" placeholder="origin+keyid+base64" required spellcheck="false" />
+          </label>
+          <label class="wide"
+            >Read token (private logs; kept in this tab only)
+            <input name="token" type="password" spellcheck="false" />
+          </label>
+          <label class="wide"
+            >Key blinding key (logs that blind key names; kept in this tab only)
+            <input name="blinding" type="password" spellcheck="false" />
+          </label>
+          <label class="wide"
+            >Witness keys (optional, one per line)
+            <textarea name="witnesses" rows="2" spellcheck="false"></textarea>
+          </label>
+          <label
+            >Cosignatures required
+            <input name="quorum" type="number" min="0" placeholder="1 if witnesses are given" />
+          </label>
+          <label class="check"
+            ><input name="auto" type="checkbox" checked /> Re-verify every 15 seconds</label
+          >
+          <div class="actions">
+            <button type="submit">Verify</button>
+            <button type="button" id="forget">Forget saved checkpoint</button>
+          </div>
+        </form>
+      </section>
+
+      <section aria-labelledby="checkpoint-h">
+        <h2 id="checkpoint-h">Checkpoint</h2>
+        <div id="checkpoint" class="panel" aria-live="polite">Not verified yet.</div>
+      </section>
+
+      <section aria-labelledby="status-h">
+        <h2 id="status-h">Status <span class="tag">from the API, not verified</span></h2>
+        <dl id="status" class="panel grid"></dl>
+      </section>
+
+      <section aria-labelledby="entry-h">
+        <h2 id="entry-h">Verify an entry</h2>
+        <form id="lookup" class="inline" autocomplete="off">
+          <input name="query" placeholder="log index, or an object key" required />
+          <button type="submit">Prove</button>
+        </form>
+        <div id="lookup-result" class="panel" aria-live="polite"></div>
+      </section>
+
+      <section aria-labelledby="recent-h">
+        <h2 id="recent-h">Recent entries <span class="tag ok">each proven</span></h2>
+        <div class="table-wrap"><table id="recent"></table></div>
+      </section>
+
+      <section aria-labelledby="findings-h">
+        <h2 id="findings-h">Latest audit</h2>
+        <div id="findings" class="panel"></div>
+        <div class="table-wrap"><table id="findings-table"></table></div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,7 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"golang.org/x/mod/sumdb/note"
+
+	"github.com/isaiahfoster/r2notary/cli/internal/blind"
+	"github.com/isaiahfoster/r2notary/cli/internal/cosign"
 	"github.com/isaiahfoster/r2notary/cli/internal/testlog"
 )
 
@@ -265,5 +271,139 @@ func TestKeygen(t *testing.T) {
 	}
 	if code, _, _ := runCLI(t, "keygen", "--name", "bad name"); code != exitUsage {
 		t.Fatalf("invalid name: exit %d", code)
+	}
+}
+
+func TestWitnessFlags(t *testing.T) {
+	skey, wkey, err := cosign.GenerateKey(bytes.NewReader(bytes.Repeat([]byte{7}, 32)), "witness.example/w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := cosign.NewSigner(skey, func() time.Time { return time.Unix(1_791_000_000, 0) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherKey, _ := cosign.GenerateKey(bytes.NewReader(bytes.Repeat([]byte{8}, 32)), "witness.example/w2")
+	l := testlog.New(t, origin)
+	l.Cosigners = []note.Signer{ws}
+	l.Append(t, testlog.Entries(0, 300)...)
+	flags := []string{"--log", l.Server(t, ""), "--vkey", l.VKey}
+	keyFile := filepath.Join(t.TempDir(), "witnesses")
+	if err := os.WriteFile(keyFile, []byte(wkey+"\n\n"+otherKey+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		args []string
+		code int
+	}{
+		{[]string{"--witness", wkey}, exitOK},
+		{[]string{"--witness", "@" + keyFile}, exitOK},                             // quorum 1 of 2
+		{[]string{"--witness", "@" + keyFile, "--witness-quorum", "2"}, exitError}, // w2 never cosigned
+		{[]string{"--witness", otherKey}, exitError},
+		{[]string{"--witness", otherKey, "--witness-quorum", "0"}, exitOK}, // report only
+		{[]string{"--witness", wkey, "--witness-quorum", "2"}, exitUsage},
+		{[]string{"--witness-quorum", "1"}, exitUsage},
+		{[]string{"--witness", l.VKey}, exitUsage}, // a log key is not a cosigner key
+	} {
+		code, out, errb := runCLI(t, append(append([]string{"checkpoint"}, c.args...), flags...)...)
+		if code != c.code {
+			t.Errorf("%v: exit %d, want %d; stderr %q", c.args, code, c.code, errb)
+		}
+		if code == exitOK && len(c.args) == 2 && !strings.Contains(out, "cosignature witness.example/w1 2026-10-03T04:00:00Z\n") {
+			t.Errorf("%v: output %q lacks the cosignature time", c.args, out)
+		}
+	}
+
+	// The policy applies to every command that reads the live checkpoint.
+	code, _, errb := runCLI(t, append([]string{"inclusion", "--index", "5", "--witness", otherKey}, flags...)...)
+	if code != exitError || !strings.Contains(errb, "0 of the 1 witness cosignatures") {
+		t.Errorf("inclusion with an absent witness: exit %d, %q", code, errb)
+	}
+	state := filepath.Join(t.TempDir(), "mon.json")
+	if code, _, errb := runCLI(t, append([]string{"monitor", "--once", "-q", "--state", state, "--witness", wkey}, flags...)...); code != exitOK {
+		t.Errorf("monitor with the witness: exit %d, %q", code, errb)
+	}
+
+	// A cosignature from a trusted witness that does not verify is evidence: exit 1.
+	cp, _ := l.File("checkpoint")
+	lines := strings.Split(string(cp), "\n")
+	last := lines[len(lines)-2]
+	i := strings.LastIndexByte(last, ' ') + 30
+	repl := byte('A')
+	if last[i] == 'A' {
+		repl = 'B'
+	}
+	lines[len(lines)-2] = last[:i] + string(repl) + last[i+1:]
+	l.SetFile("checkpoint", []byte(strings.Join(lines, "\n")))
+	if code, _, errb := runCLI(t, append([]string{"checkpoint", "--witness", wkey}, flags...)...); code != exitFailure {
+		t.Errorf("corrupted cosignature: exit %d, %q", code, errb)
+	}
+	// Without --witness the corrupted line is from an unknown key and is ignored.
+	if code, _, errb := runCLI(t, append([]string{"checkpoint"}, flags...)...); code != exitOK {
+		t.Errorf("corrupted cosignature, no --witness: exit %d, %q", code, errb)
+	}
+}
+
+// A blinded log (M8): entries name objects by keyHmac. Entries 10 and 400 are about "wanted".
+func TestInclusionBlinded(t *testing.T) {
+	secret := bytes.Repeat([]byte{9}, 32)
+	keyFile := filepath.Join(t.TempDir(), "blinding.key")
+	if err := os.WriteFile(keyFile, []byte(base64.RawURLEncoding.EncodeToString(secret)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := blind.Name(secret, "wanted")
+	blinded := func(name, action string) []byte {
+		return fmt.Appendf(nil, `{"action":%q,"keyHmac":%q,"type":"object.event","v":1}`, action, name)
+	}
+	l := testlog.New(t, origin)
+	entries := make([][]byte, 600)
+	for i := range entries {
+		entries[i] = blinded(blind.Name(secret, fmt.Sprintf("obj/%d", i)), "PutObject")
+	}
+	entries[10] = blinded(h, "PutObject")
+	entries[400] = blinded(h, "DeleteObject")
+	l.Append(t, entries...)
+	flags := []string{"--log", l.Server(t, ""), "--vkey", l.VKey}
+
+	// Without the blinding key nothing matches, and the CLI says why.
+	code, _, errb := runCLI(t, append([]string{"inclusion", "--key", "wanted"}, flags...)...)
+	if code != exitNegative || !strings.Contains(errb, "blinds key names") {
+		t.Fatalf("no blinding key: exit %d, %q", code, errb)
+	}
+	code, out, errb := runCLI(t, append([]string{"inclusion", "--key", "wanted", "--blinding-key-file", keyFile}, flags...)...)
+	if code != exitOK || strings.Count(out, "\n") != 2 || !strings.Contains(out, `{"index":400,`) {
+		t.Fatalf("scan: exit %d, %q, %q", code, out, errb)
+	}
+	t.Setenv("R2NOTARY_BLINDING_KEY", base64.RawURLEncoding.EncodeToString(secret))
+	if code, _, errb := runCLI(t, append([]string{"inclusion", "--key", "wanted"}, flags...)...); code != exitOK {
+		t.Fatalf("key from the environment: exit %d, %q", code, errb)
+	}
+
+	// The lookup API is asked for keyHmac, never for the key.
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.RawQuery)
+		if r.URL.Query().Get("keyHmac") != h || r.URL.Query().Has("key") {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		fmt.Fprintf(w, `{"keyHmac":%q,"size":600,"entries":[{"index":10},{"index":400}],"next":null}`, h)
+	}))
+	t.Cleanup(srv.Close)
+	code, out, errb = runCLI(t, append([]string{"inclusion", "--key", "wanted", "--api", srv.URL}, flags...)...)
+	if code != exitOK || strings.Count(out, "\n") != 2 || strings.Contains(strings.Join(asked, " "), "wanted") {
+		t.Fatalf("lookup: exit %d, %q, %q, asked %v", code, out, errb, asked)
+	}
+
+	// --watch cannot work on blinded keys: refused, not silently quiet.
+	state := filepath.Join(t.TempDir(), "mon.json")
+	if code, _, errb := runCLI(t, append([]string{"monitor", "--once", "-q", "--watch", "obj/", "--state", state}, flags...)...); code != exitUsage {
+		t.Fatalf("--watch on a blinded log: exit %d, %q", code, errb)
+	}
+	// A malformed blinding key is a usage error.
+	t.Setenv("R2NOTARY_BLINDING_KEY", "short")
+	if code, _, _ := runCLI(t, append([]string{"inclusion", "--key", "wanted"}, flags...)...); code != exitUsage {
+		t.Fatalf("bad blinding key: exit %d", code)
 	}
 }

@@ -1,8 +1,8 @@
 {
   "benchmark": "PLAN §14.1 event -> visible latency",
   "environment": {
-    "date": "2026-10-03T07:34:26.824Z",
-    "commit": "f35a560",
+    "date": "2026-10-03T11:07:08.656Z",
+    "commit": "75a0b24",
     "dirty": true,
     "os": "linux 7.2.5-4-omarchy",
     "cpu": "AMD Ryzen 5 3600 6-Core Processor",
@@ -30,12 +30,12 @@
       "ratePerSecond": 25,
       "latencyMs": {
         "n": 1000,
-        "min": 1019,
-        "median": 3059,
+        "min": 1017,
+        "median": 3056,
         "p95": 4858,
-        "p99": 4994,
-        "max": 5010,
-        "mean": 3016
+        "p99": 4993,
+        "max": 5019,
+        "mean": 3023
       },
       "distinctPublishedSizesSeen": 10
     },
@@ -45,12 +45,12 @@
       "ratePerSecond": 25,
       "latencyMs": {
         "n": 1000,
-        "min": 951,
-        "median": 5030,
-        "p95": 8629,
-        "p99": 8906,
-        "max": 9025,
-        "mean": 5028
+        "min": 947,
+        "median": 5028,
+        "p95": 8627,
+        "p99": 8902,
+        "max": 9021,
+        "mean": 5015
       },
       "distinctPublishedSizesSeen": 5
     },
@@ -60,12 +60,12 @@
       "ratePerSecond": 25,
       "latencyMs": {
         "n": 1000,
-        "min": 3036,
-        "median": 12373,
-        "p95": 18374,
-        "p99": 18876,
-        "max": 19027,
-        "mean": 11832
+        "min": 3028,
+        "median": 12388,
+        "p95": 18388,
+        "p99": 18882,
+        "max": 19029,
+        "mean": 11836
       },
       "distinctPublishedSizesSeen": 3
     },
@@ -75,12 +75,12 @@
       "ratePerSecond": 50,
       "latencyMs": {
         "n": 1000,
-        "min": 1018,
-        "median": 1961,
-        "p95": 2861,
-        "p99": 2944,
-        "max": 2961,
-        "mean": 1985
+        "min": 1015,
+        "median": 1963,
+        "p95": 2864,
+        "p99": 2949,
+        "max": 2963,
+        "mean": 1989
       },
       "distinctPublishedSizesSeen": 10
     },
@@ -90,12 +90,12 @@
       "ratePerSecond": 50,
       "latencyMs": {
         "n": 1000,
-        "min": 1051,
-        "median": 4350,
-        "p95": 6751,
-        "p99": 6950,
-        "max": 6953,
-        "mean": 4201
+        "min": 1022,
+        "median": 4321,
+        "p95": 6738,
+        "p99": 6938,
+        "max": 6945,
+        "mean": 4187
       },
       "distinctPublishedSizesSeen": 4
     },
@@ -105,12 +105,12 @@
       "ratePerSecond": 50,
       "latencyMs": {
         "n": 1000,
-        "min": 68,
-        "median": 4978,
-        "p95": 9479,
-        "p99": 9879,
-        "max": 9978,
-        "mean": 5023
+        "min": 45,
+        "median": 4977,
+        "p95": 9477,
+        "p99": 9877,
+        "max": 9975,
+        "mean": 5010
       },
       "distinctPublishedSizesSeen": 2
     }

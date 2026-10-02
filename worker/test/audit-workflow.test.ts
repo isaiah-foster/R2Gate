@@ -63,7 +63,9 @@ describe('ScanWorkflow', () => {
     const kinds = (await publishedEntries(LOG))
       .map((b) => decodeEntry(b))
       .flatMap((d) =>
-        d.known && d.entry.type === 'audit.finding' ? [`${d.entry.kind} ${d.entry.key}`] : [],
+        d.known && d.entry.type === 'audit.finding'
+          ? [`${d.entry.kind} ${String(d.entry.key)}`]
+          : [],
       );
     expect(kinds.sort()).toEqual(['MISSING_OBJECT vanished', 'UNLOGGED_OBJECT sneaky']);
   });

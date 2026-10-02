@@ -1,9 +1,12 @@
-// C2SP signed-note with Ed25519 signatures (signature type 0x01), using WebCrypto only.
+// C2SP signed-note with Ed25519 signatures (signature type 0x01), and C2SP tlog-cosignature
+// Ed25519 cosignatures (`cosignature/v1`, signature type 0x04) for witnesses, using WebCrypto only.
 //
 // Key strings use the same formats as golang.org/x/mod/sumdb/note, so keys interoperate with the
 // Go verifier and with Go tooling:
-//   verifier key  <name>+<hex key ID>+base64(0x01 || 32-byte public key)       (C2SP "vkey")
-//   signer key    PRIVATE+KEY+<name>+<hex key ID>+base64(0x01 || 32-byte seed)  (Go convention)
+//   verifier key  <name>+<hex key ID>+base64(type || 32-byte public key)       (C2SP "vkey")
+//   signer key    PRIVATE+KEY+<name>+<hex key ID>+base64(type || 32-byte seed)  (Go convention)
+// with type 0x01 for log keys and 0x04 for cosigner keys (as github.com/transparency-dev/formats
+// writes them). The key ID covers the type, so the two kinds of key never match each other.
 //
 // WebCrypto cannot import a raw Ed25519 private key, so the seed is wrapped in a fixed PKCS#8
 // envelope (RFC 8410) for import.
@@ -20,8 +23,13 @@ import {
 import { sha256 } from './merkle.ts';
 
 export const SIG_TYPE_ED25519 = 0x01;
+/** C2SP tlog-cosignature, Ed25519 `cosignature/v1`. */
+export const SIG_TYPE_COSIGNATURE_V1 = 0x04;
+type SigType = typeof SIG_TYPE_ED25519 | typeof SIG_TYPE_COSIGNATURE_V1;
 const ED25519_PUBLIC_KEY_SIZE = 32;
 const ED25519_SIGNATURE_SIZE = 64;
+/** A cosignature is a big-endian u64 timestamp followed by the Ed25519 signature. */
+const TIMESTAMP_SIZE = 8;
 /** RFC 8410 PKCS#8 prefix for an Ed25519 private key; the 32-byte seed follows. */
 const PKCS8_ED25519_PREFIX = fromHex('302e020100300506032b657004220420');
 const SIGNER_KEY_PREFIX = 'PRIVATE+KEY+';
@@ -40,6 +48,14 @@ function isKeyPair(k: unknown): k is { privateKey: Key; publicKey: Key } {
 
 export class NoteError extends Error {
   override name = 'NoteError';
+}
+
+/**
+ * A well-formed note without a valid signature from any supplied key, or with an invalid one from
+ * a supplied key. Distinct from a malformed note: a witness answers 403 for this, 400 for that.
+ */
+export class SignatureError extends NoteError {
+  override name = 'SignatureError';
 }
 
 export interface NoteSigner {
@@ -111,21 +127,25 @@ function cut(s: string, sep: string): [string, string] | null {
   return i < 0 ? null : [s.slice(0, i), s.slice(i + sep.length)];
 }
 
-function decodeKeyMaterial(b64: string, what: string): Uint8Array {
+function decodeKeyMaterial(b64: string, what: string, type: SigType): Uint8Array {
   let typed: Uint8Array;
   try {
     typed = fromBase64(b64);
   } catch {
     throw new NoteError(`${what}: invalid base64`);
   }
-  if (typed[0] !== SIG_TYPE_ED25519) throw new NoteError(`${what}: unsupported signature type`);
+  if (typed[0] !== type) throw new NoteError(`${what}: unsupported signature type`);
   if (typed.length !== 1 + ED25519_PUBLIC_KEY_SIZE)
     throw new NoteError(`${what}: wrong key length`);
   return typed;
 }
 
 /** Parses `name+id+key` without verifying the key ID (see parseVerifierKey). */
-function splitKey(s: string, what: string): { name: string; idHex: string; typed: Uint8Array } {
+function splitKey(
+  s: string,
+  what: string,
+  type: SigType,
+): { name: string; idHex: string; typed: Uint8Array } {
   const a = cut(s, '+');
   const b = a && cut(a[1], '+');
   if (!a || !b) throw new NoteError(`${what}: expected name+id+key`);
@@ -134,12 +154,18 @@ function splitKey(s: string, what: string): { name: string; idHex: string; typed
   checkName(name);
   if (!/^[0-9a-f]{8}$/.test(idHex))
     throw new NoteError(`${what}: key ID must be 8 lowercase hex digits`);
-  return { name, idHex, typed: decodeKeyMaterial(b64, what) };
+  return { name, idHex, typed: decodeKeyMaterial(b64, what, type) };
 }
 
-/** Parses a verifier key and checks that its key ID matches its name and public key. */
-export async function parseVerifierKey(vkey: string): Promise<VerifierKey> {
-  const { name, idHex, typed } = splitKey(vkey, 'verifier key');
+/**
+ * Parses a verifier key of the given signature type (a log key by default) and checks that its
+ * key ID matches its name and public key.
+ */
+export async function parseVerifierKey(
+  vkey: string,
+  type: SigType = SIG_TYPE_ED25519,
+): Promise<VerifierKey> {
+  const { name, idHex, typed } = splitKey(vkey, 'verifier key', type);
   const keyId = Number.parseInt(idHex, 16);
   if ((await computeKeyId(name, typed)) !== keyId) {
     throw new NoteError('verifier key: key ID does not match name and key');
@@ -147,10 +173,14 @@ export async function parseVerifierKey(vkey: string): Promise<VerifierKey> {
   return { name, keyId, publicKey: typed.slice(1) };
 }
 
-export async function formatVerifierKey(name: string, publicKey: Uint8Array): Promise<string> {
+export async function formatVerifierKey(
+  name: string,
+  publicKey: Uint8Array,
+  type: SigType = SIG_TYPE_ED25519,
+): Promise<string> {
   checkName(name);
   if (publicKey.length !== ED25519_PUBLIC_KEY_SIZE) throw new NoteError('wrong public key length');
-  const typed = concatBytes(Uint8Array.of(SIG_TYPE_ED25519), publicKey);
+  const typed = concatBytes(Uint8Array.of(type), publicKey);
   return `${name}+${keyIdHex(await computeKeyId(name, typed))}+${toBase64(typed)}`;
 }
 
@@ -185,11 +215,14 @@ async function publicKeyFromSeed(seed: Uint8Array): Promise<Uint8Array> {
   return fromBase64(b64.padEnd(Math.ceil(b64.length / 4) * 4, '='));
 }
 
-/** Creates a signer from a `PRIVATE+KEY+name+id+key` string, checking its key ID. */
-export async function newSigner(skey: string): Promise<NoteSigner> {
+/** A `PRIVATE+KEY+name+id+key` string of the given type, loaded and its key ID checked. */
+async function loadSignerKey(
+  skey: string,
+  type: SigType,
+): Promise<{ name: string; keyId: number; vkey: string; key: Key }> {
   if (!skey.startsWith(SIGNER_KEY_PREFIX))
     throw new NoteError('signer key: missing PRIVATE+KEY+ prefix');
-  const { name, idHex, typed } = splitKey(skey.slice(SIGNER_KEY_PREFIX.length), 'signer key');
+  const { name, idHex, typed } = splitKey(skey.slice(SIGNER_KEY_PREFIX.length), 'signer key', type);
   const seed = typed.slice(1);
   let publicKey: Uint8Array;
   let key: Key;
@@ -200,24 +233,26 @@ export async function newSigner(skey: string): Promise<NoteSigner> {
     if (e instanceof NoteError) throw e;
     throw new NoteError(`signer key: ${String(e)}`);
   }
-  const vkey = await formatVerifierKey(name, publicKey);
+  const vkey = await formatVerifierKey(name, publicKey, type);
   const keyId = Number.parseInt(idHex, 16);
-  if (
-    (await computeKeyId(name, concatBytes(Uint8Array.of(SIG_TYPE_ED25519), publicKey))) !== keyId
-  ) {
+  if ((await computeKeyId(name, concatBytes(Uint8Array.of(type), publicKey))) !== keyId) {
     throw new NoteError('signer key: key ID does not match name and key');
   }
-  return {
-    name,
-    keyId,
-    vkey,
-    sign: async (message) =>
-      new Uint8Array(await crypto.subtle.sign('Ed25519', key, arrayBufferCopy(message))),
-  };
+  return { name, keyId, vkey, key };
 }
 
-export async function newVerifier(vkey: string): Promise<NoteVerifier> {
-  const k = await parseVerifierKey(vkey);
+async function ed25519Sign(key: Key, message: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.sign('Ed25519', key, arrayBufferCopy(message)));
+}
+
+/** Creates a signer from a `PRIVATE+KEY+name+id+key` string, checking its key ID. */
+export async function newSigner(skey: string): Promise<NoteSigner> {
+  const { name, keyId, vkey, key } = await loadSignerKey(skey, SIG_TYPE_ED25519);
+  return { name, keyId, vkey, sign: (message) => ed25519Sign(key, message) };
+}
+
+async function importPublicKey(vkey: string, type: SigType): Promise<VerifierKey & { key: Key }> {
+  const k = await parseVerifierKey(vkey, type);
   let key: Key;
   try {
     key = await crypto.subtle.importKey(
@@ -230,17 +265,114 @@ export async function newVerifier(vkey: string): Promise<NoteVerifier> {
   } catch (e) {
     throw new NoteError(`verifier key: ${String(e)}`);
   }
+  return { ...k, key };
+}
+
+function ed25519Verify(key: Key, message: Uint8Array, signature: Uint8Array): Promise<boolean> {
+  return crypto.subtle.verify('Ed25519', key, arrayBufferCopy(signature), arrayBufferCopy(message));
+}
+
+export async function newVerifier(vkey: string): Promise<NoteVerifier> {
+  const k = await importPublicKey(vkey, SIG_TYPE_ED25519);
   return {
     name: k.name,
     keyId: k.keyId,
     verify: async (message, signature) =>
-      signature.length === ED25519_SIGNATURE_SIZE &&
-      crypto.subtle.verify('Ed25519', key, arrayBufferCopy(signature), arrayBufferCopy(message)),
+      signature.length === ED25519_SIGNATURE_SIZE && ed25519Verify(k.key, message, signature),
   };
+}
+
+// ---- cosignatures (C2SP tlog-cosignature, Ed25519 cosignature/v1) ---------------------------
+
+/** A witness key: cosigns checkpoint text at a time the caller supplies. */
+export interface Cosigner {
+  readonly name: string;
+  readonly keyId: number;
+  readonly vkey: string;
+  /** The note signature line (`— name base64(keyID || timestamp || signature)` and a newline). */
+  cosign(text: string, timestamp: number): Promise<string>;
+}
+
+function checkTimestamp(t: number): void {
+  if (!Number.isSafeInteger(t) || t < 0) {
+    throw new NoteError(`cosignature timestamp ${String(t)} is not a safe non-negative integer`);
+  }
+}
+
+/** `cosignature/v1\ntime <t>\n` followed by the cosigned note text. */
+function cosignedMessage(message: Uint8Array, timestamp: number): Uint8Array {
+  return concatBytes(utf8Encode(`cosignature/v1\ntime ${String(timestamp)}\n`), message);
+}
+
+/**
+ * The timestamp of a cosignature (the signature bytes after the key ID). Rejects anything that is
+ * not 72 bytes, or a time beyond 2^53 - 1 (the spec allows up to 2^63 - 1; no real time is that
+ * large, and JavaScript numbers cannot hold it exactly).
+ */
+export function cosignatureTimestamp(signature: Uint8Array): number {
+  if (signature.length !== TIMESTAMP_SIZE + ED25519_SIGNATURE_SIZE) {
+    throw new NoteError('cosignature must be a timestamp and a 64-byte signature');
+  }
+  const t = new DataView(signature.buffer, signature.byteOffset, TIMESTAMP_SIZE).getBigUint64(0);
+  if (t > BigInt(Number.MAX_SAFE_INTEGER)) throw new NoteError('cosignature timestamp too large');
+  return Number(t);
+}
+
+export async function newCosigner(skey: string): Promise<Cosigner> {
+  const { name, keyId, vkey, key } = await loadSignerKey(skey, SIG_TYPE_COSIGNATURE_V1);
+  return {
+    name,
+    keyId,
+    vkey,
+    cosign: async (text, timestamp) => {
+      checkText(text);
+      checkTimestamp(timestamp);
+      const sig = await ed25519Sign(key, cosignedMessage(utf8Encode(text), timestamp));
+      const raw = new Uint8Array(4 + TIMESTAMP_SIZE + ED25519_SIGNATURE_SIZE);
+      const view = new DataView(raw.buffer);
+      view.setUint32(0, keyId);
+      view.setBigUint64(4, BigInt(timestamp));
+      raw.set(sig, 4 + TIMESTAMP_SIZE);
+      return `${SIG_LINE_PREFIX}${name} ${toBase64(raw)}\n`;
+    },
+  };
+}
+
+/**
+ * A verifier for cosignature/v1 lines. It plugs into openNote like a log verifier: the signature
+ * it receives is the timestamp followed by the Ed25519 signature over the cosigned message.
+ */
+export async function newCosignatureVerifier(vkey: string): Promise<NoteVerifier> {
+  const k = await importPublicKey(vkey, SIG_TYPE_COSIGNATURE_V1);
+  return {
+    name: k.name,
+    keyId: k.keyId,
+    verify: async (message, signature) => {
+      let t: number;
+      try {
+        t = cosignatureTimestamp(signature);
+      } catch {
+        return false;
+      }
+      return ed25519Verify(k.key, cosignedMessage(message, t), signature.subarray(TIMESTAMP_SIZE));
+    },
+  };
+}
+
+/** Generates a witness (cosigner) key pair, signature type 0x04. */
+export async function generateCosignerKey(name: string): Promise<{ skey: string; vkey: string }> {
+  return generateTypedKey(name, SIG_TYPE_COSIGNATURE_V1);
 }
 
 /** Generates a new Ed25519 key pair as Go-compatible signer and verifier key strings. */
 export async function generateKey(name: string): Promise<{ skey: string; vkey: string }> {
+  return generateTypedKey(name, SIG_TYPE_ED25519);
+}
+
+async function generateTypedKey(
+  name: string,
+  type: SigType,
+): Promise<{ skey: string; vkey: string }> {
   checkName(name);
   const pair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
   if (!isKeyPair(pair)) throw new NoteError('Ed25519 key generation returned no key pair');
@@ -254,9 +386,9 @@ export async function generateKey(name: string): Promise<{ skey: string; vkey: s
   }
   const seed = pkcs8.slice(PKCS8_ED25519_PREFIX.length);
   const publicKey = await exportBytes('raw', pair.publicKey);
-  const vkey = await formatVerifierKey(name, publicKey);
-  const { idHex } = splitKey(vkey, 'verifier key');
-  const skey = `${SIGNER_KEY_PREFIX}${name}+${idHex}+${toBase64(concatBytes(Uint8Array.of(SIG_TYPE_ED25519), seed))}`;
+  const vkey = await formatVerifierKey(name, publicKey, type);
+  const { idHex } = splitKey(vkey, 'verifier key', type);
+  const skey = `${SIGNER_KEY_PREFIX}${name}+${idHex}+${toBase64(concatBytes(Uint8Array.of(type), seed))}`;
   return { skey, vkey };
 }
 
@@ -343,9 +475,11 @@ export async function openNote(
 
     const v = verifiers.find((x) => x.name === name && x.keyId === keyId);
     if (v === undefined) continue;
-    if (!(await v.verify(message, signature))) throw new NoteError(`invalid signature from ${id}`);
+    if (!(await v.verify(message, signature))) {
+      throw new SignatureError(`invalid signature from ${id}`);
+    }
     verified.push({ name, keyId });
   }
-  if (verified.length === 0) throw new NoteError('no signature from a known key');
+  if (verified.length === 0) throw new SignatureError('no signature from a known key');
   return { text, signatures, verified };
 }

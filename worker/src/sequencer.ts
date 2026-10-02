@@ -1,4 +1,12 @@
-import { decodeEntry, newSigner, utf8Encode, type NoteSigner } from '@r2notary/core';
+import {
+  MAX_OBJECT_KEY_BYTES,
+  decodeEntry,
+  loggedName,
+  newSigner,
+  utf8Encode,
+  type KeyBlinder,
+  type NoteSigner,
+} from '@r2notary/core';
 import { DurableObject } from 'cloudflare:workers';
 import {
   AuditStore,
@@ -11,6 +19,7 @@ import {
   type ScanSummary,
   type ScrubObservation,
 } from './audit/store.ts';
+import { blindingState, loadBlinder } from './blinding.ts';
 import { parseConfig, type Config } from './config.ts';
 import { publish, putImmutable, type PublishResult } from './publish.ts';
 import {
@@ -22,7 +31,9 @@ import {
   type IngestReport,
   type ObjectRange,
   type ObjectState,
+  type WitnessStatus,
 } from './store.ts';
+import { loadWitnesses, witnessCosigner, type Cosign, type LoadedWitness } from './witness.ts';
 
 /** Upper bound on one append call (a queue batch is at most 100 messages). */
 export const MAX_APPEND_ITEMS = 1000;
@@ -48,6 +59,11 @@ export interface SequencerStatus {
   readonly audit: ScanSummary | null;
   /** The most recent backfill, in any state (M7: otherwise only visible in Workflows tooling). */
   readonly backfill: ScanSummary | null;
+  /** Configured witnesses (M8) and how many cosignatures a checkpoint needs. */
+  readonly witnesses: {
+    readonly quorum: number;
+    readonly witnesses: readonly (WitnessStatus & { readonly url: string })[];
+  };
 }
 
 export interface FindingsPage {
@@ -104,6 +120,49 @@ export function validateAppendItems(items: readonly AppendItem[], monitoredBucke
   });
 }
 
+/**
+ * Checks how each item names its object against the log's key blinding (M8). On a blinded log an
+ * entry must carry keyHmac, never a plaintext key (that would publish the name), and the item must
+ * carry the key whose HMAC it is (so the objects view stays keyed by real keys); on a log that is
+ * not blinded, the reverse.
+ */
+export async function checkNames(
+  items: readonly AppendItem[],
+  blinder: KeyBlinder | null,
+): Promise<void> {
+  for (const [i, item] of items.entries()) {
+    const at = `item ${String(i)}`;
+    const key: unknown = item.key; // arrives over RPC
+    if (
+      key !== undefined &&
+      (typeof key !== 'string' ||
+        key === '' ||
+        !key.isWellFormed() ||
+        utf8Encode(key).length > MAX_OBJECT_KEY_BYTES)
+    ) {
+      throw new AppendError(`${at}: key must be a valid object key`);
+    }
+    const d = decodeEntry(item.entry);
+    const name = d.known ? loggedName(d.entry) : null;
+    if (name === null) {
+      if (key !== undefined)
+        throw new AppendError(`${at}: a key for an entry that names no object`);
+      continue;
+    }
+    if (blinder === null) {
+      if (name.blinded) throw new AppendError(`${at}: keyHmac on a log without key blinding`);
+      if (key !== undefined && key !== name.name)
+        throw new AppendError(`${at}: key does not match`);
+      continue;
+    }
+    if (!name.blinded) throw new AppendError(`${at}: a plaintext key on a blinded log`);
+    if (key === undefined) throw new AppendError(`${at}: a blinded entry needs its key`);
+    if ((await blinder.blind(key)) !== name.name) {
+      throw new AppendError(`${at}: keyHmac is not the HMAC of the key`);
+    }
+  }
+}
+
 const REPORT_COUNTS = ['invalid', 'loopDropped', 'foreignDropped', 'deadLettered'] as const;
 
 /** Checks an ingest report from the queue consumer (exact fields, non-negative integers). */
@@ -153,6 +212,8 @@ export class Sequencer extends DurableObject<Env> {
   readonly #store: SequencerStore;
   readonly #audit: AuditStore;
   #signer: Promise<NoteSigner> | null = null;
+  #witnesses: Promise<LoadedWitness[]> | null = null;
+  #blinder: Promise<KeyBlinder | null> | null = null;
   #inflight: Promise<PublishResult> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -167,6 +228,7 @@ export class Sequencer extends DurableObject<Env> {
 
   async append(items: AppendItem[]): Promise<AppendResult> {
     validateAppendItems(items, this.#config.monitoredBucket);
+    await checkNames(items, await this.#getBlinder());
     const result = this.#store.append(items, Date.now(), this.#config.dedupeTtlSeconds * 1000);
     await this.#scheduleAlarm(false);
     return result;
@@ -178,8 +240,10 @@ export class Sequencer extends DurableObject<Env> {
    */
   async ingest(items: AppendItem[], report: IngestReport): Promise<AppendResult> {
     validateIngestReport(report);
-    if (!Array.isArray(items) || items.length > 0)
+    if (!Array.isArray(items) || items.length > 0) {
       validateAppendItems(items, this.#config.monitoredBucket);
+      await checkNames(items, await this.#getBlinder());
+    }
     const result = this.#store.ingest(
       items,
       report,
@@ -206,6 +270,7 @@ export class Sequencer extends DurableObject<Env> {
         signer: await this.#getSigner(),
         config: this.#config,
         now: Date.now,
+        ...(this.#config.witnesses.length === 0 ? {} : { cosign: await this.#getCosign() }),
       });
     } catch (e) {
       const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
@@ -213,6 +278,39 @@ export class Sequencer extends DurableObject<Env> {
       this.#store.setLastError(message);
       throw e;
     }
+  }
+
+  async #getCosign(): Promise<Cosign> {
+    this.#witnesses ??= loadWitnesses(this.#config.witnesses).catch((e: unknown) => {
+      this.#witnesses = null;
+      throw e;
+    });
+    return witnessCosigner({
+      witnesses: await this.#witnesses,
+      quorum: this.#config.witnessQuorum,
+      fetch: (url, init) => fetch(url, init),
+      state: this.#store,
+      now: Date.now,
+    });
+  }
+
+  /**
+   * The log's key blinder (null if the log is not blinded). Loading it also tells the store which
+   * blinding state to enforce, so it is awaited before anything is appended.
+   */
+  #getBlinder(): Promise<KeyBlinder | null> {
+    const secret = (this.env as { readonly KEY_BLINDING_KEY?: unknown }).KEY_BLINDING_KEY;
+    this.#blinder ??= loadBlinder(this.#config, secret).then(
+      (b) => {
+        this.#store.expectKeyBlinding(blindingState(b));
+        return b;
+      },
+      (e: unknown) => {
+        this.#blinder = null;
+        throw e;
+      },
+    );
+    return this.#blinder;
   }
 
   #getSigner(): Promise<NoteSigner> {
@@ -271,16 +369,33 @@ export class Sequencer extends DurableObject<Env> {
       ingest: this.#store.ingestCounters(),
       audit: this.#audit.latest('audit'),
       backfill: this.#audit.latest('backfill'),
+      witnesses: {
+        quorum: this.#config.witnessQuorum,
+        witnesses: this.#config.witnesses.map((w) => ({
+          ...this.#store.witnessStatus(w.vkey),
+          url: w.url,
+        })),
+      },
     };
   }
 
   // ---- auditor (M6): each call is one synchronous step of audit/store.ts ---------------------
 
-  #scanContext(): ScanContext {
+  /**
+   * The context of one audit step. On a blinded log it carries the keyHmac of `keys` (listed or
+   * scrubbed keys the step may name), computed here because a step's transaction cannot await.
+   */
+  async #scanContext(keys: readonly string[] = []): Promise<ScanContext> {
+    const blinder = await this.#getBlinder();
+    const names =
+      blinder === null
+        ? null
+        : new Map(await Promise.all(keys.map(async (k) => [k, await blinder.blind(k)] as const)));
     return {
       now: Date.now(),
       ttlMs: this.#config.dedupeTtlSeconds * 1000,
       bucket: this.#config.monitoredBucket,
+      names,
     };
   }
 
@@ -300,7 +415,12 @@ export class Sequencer extends DurableObject<Env> {
 
   async scanStart(scanId: string, mode: ScanMode): Promise<Outcome<{ scan: ScanSummary }>> {
     await this.#flush();
-    const r = this.#audit.start(scanId, mode, this.#config.auditGraceSeconds, this.#scanContext());
+    const r = this.#audit.start(
+      scanId,
+      mode,
+      this.#config.auditGraceSeconds,
+      await this.#scanContext(),
+    );
     await this.#scheduleAlarm(false);
     return r;
   }
@@ -314,7 +434,14 @@ export class Sequencer extends DurableObject<Env> {
   }
 
   async scanPage(req: PageRequest): Promise<Outcome<PageResult>> {
-    const r = this.#audit.page(req, this.#scanContext());
+    const keys: unknown = (req as { listed?: unknown }).listed;
+    const listed = Array.isArray(keys)
+      ? (keys as unknown[]).flatMap((o) => {
+          const k = (o as { key?: unknown } | null)?.key;
+          return typeof k === 'string' && k !== '' && k.isWellFormed() ? [k] : [];
+        })
+      : [];
+    const r = this.#audit.page(req, await this.#scanContext(listed));
     await this.#scheduleAlarm(false);
     return r;
   }
@@ -324,14 +451,19 @@ export class Sequencer extends DurableObject<Env> {
     page: number,
     observations: ScrubObservation[],
   ): Promise<Outcome<{ observations: number; findings: number }>> {
-    const r = this.#audit.observe(scanId, page, observations, this.#scanContext());
+    const keys = Array.isArray(observations)
+      ? observations.flatMap((o) =>
+          typeof o.key === 'string' && o.key !== '' && o.key.isWellFormed() ? [o.key] : [],
+        )
+      : [];
+    const r = this.#audit.observe(scanId, page, observations, await this.#scanContext(keys));
     await this.#scheduleAlarm(false);
     return r;
   }
 
   async scanConfirm(scanId: string, limit: number): Promise<Outcome<ConfirmResult>> {
     await this.#flush();
-    const r = this.#audit.confirm(scanId, limit, this.#scanContext());
+    const r = this.#audit.confirm(scanId, limit, await this.#scanContext());
     await this.#scheduleAlarm(false);
     return r;
   }
@@ -344,7 +476,7 @@ export class Sequencer extends DurableObject<Env> {
   async scanFinish(
     scanId: string,
   ): Promise<Outcome<{ scan: ScanSummary; reportKey: string | null }>> {
-    const r = this.#audit.finish(scanId, this.#scanContext());
+    const r = this.#audit.finish(scanId, await this.#scanContext());
     if (!r.ok) return r;
     if (r.scan.mode !== 'audit') return { ok: true, scan: r.scan, reportKey: null };
     const reportKey = `${this.#config.logName}/x-reports/${scanId}.json`;

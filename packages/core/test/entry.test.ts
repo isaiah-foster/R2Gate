@@ -300,3 +300,94 @@ describe('entry encoding', () => {
     expect(() => decodeEntry(big)).toThrow(/65535/);
   });
 });
+
+describe('blinded keys (M8: keyHmac instead of key)', () => {
+  const H = 'a'.repeat(64);
+  const H2 = 'b'.repeat(64);
+  const unnamed = {
+    v: 1,
+    type: 'object.event',
+    bucket: 'my-bucket',
+    action: 'PutObject',
+    size: 65536,
+    etag: 'c846ff7a18f28c2e262116d6e8719ef0',
+    eventTime: '2024-05-24T19:36:44.379Z',
+    ingestedAt: '2024-05-24T19:36:45.001Z',
+  } as const;
+
+  it('accepts keyHmac in place of key in every entry that names an object', () => {
+    const entries: Entry[] = [
+      { ...unnamed, keyHmac: H },
+      {
+        ...unnamed,
+        keyHmac: H,
+        action: 'CopyObject',
+        copySource: { bucket: 'my-bucket', keyHmac: H2 },
+      },
+      {
+        v: 1,
+        type: 'object.snapshot',
+        bucket: 'my-bucket',
+        keyHmac: H,
+        size: 1,
+        etag: 'abc',
+        uploaded: '2026-01-01T00:00:00.000Z',
+        snapshotId: 'snap-1',
+      },
+      {
+        v: 1,
+        type: 'audit.finding',
+        kind: 'MISSING_OBJECT',
+        bucket: 'my-bucket',
+        keyHmac: H,
+        expected: { etag: 'abc', size: 1, eventTime: '2026-01-01T00:00:00Z', seq: 41 },
+        scanId: 'scan-1',
+        observedAt: '2026-01-01T00:10:00Z',
+        graceSeconds: 300,
+      },
+      {
+        v: 1,
+        type: 'audit.observation',
+        bucket: 'my-bucket',
+        keyHmac: H,
+        etag: 'abc',
+        size: 1,
+        sha256: SHA_A,
+        scanId: 'scan-1',
+        observedAt: '2026-01-01T00:10:00Z',
+      },
+    ];
+    for (const e of entries) {
+      const bytes = encodeEntry(e);
+      expect(dec.decode(bytes)).not.toContain('"key"');
+      expect(decodeEntry(bytes)).toEqual({ known: true, entry: e });
+    }
+  });
+
+  it('requires exactly one of key and keyHmac, and never mixes them in one entry', () => {
+    const bad: unknown[] = [
+      unnamed,
+      { ...put, keyHmac: H },
+      { ...unnamed, keyHmac: H.toUpperCase() },
+      { ...unnamed, keyHmac: H.slice(1) },
+      { ...unnamed, keyHmac: 42 },
+      // A blinded entry must not disclose its copy source's name, and the reverse is just as odd.
+      {
+        ...unnamed,
+        keyHmac: H,
+        action: 'CopyObject',
+        copySource: { bucket: 'my-bucket', key: 'x' },
+      },
+      { ...put, action: 'CopyObject', copySource: { bucket: 'my-bucket', keyHmac: H2 } },
+      {
+        ...unnamed,
+        keyHmac: H,
+        action: 'CopyObject',
+        copySource: { bucket: 'my-bucket', key: 'x', keyHmac: H2 },
+      },
+    ];
+    for (const e of bad) {
+      expect(() => encodeEntry(e as Entry), JSON.stringify(e)).toThrow(EntryError);
+    }
+  });
+});

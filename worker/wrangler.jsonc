@@ -8,7 +8,9 @@
   // Secrets: `.dev.vars` locally (`npm run keygen`), `wrangler secret put` remotely
   // (docs/OPERATIONS.md). READ_TOKEN is only used when PUBLIC_LOG is "false" (the default).
   // ALERT_WEBHOOK_URL (https, optional) is not listed: `required` is the only kind wrangler has.
-  "secrets": { "required": ["SIGNING_KEY", "ADMIN_TOKEN", "READ_TOKEN"] },
+  // KEY_BLINDING_KEY is only used when KEY_BLINDING is "true" (M8); like READ_TOKEN, a listed secret
+  // that is not set only produces a local warning.
+  "secrets": { "required": ["SIGNING_KEY", "ADMIN_TOKEN", "READ_TOKEN", "KEY_BLINDING_KEY"] },
 
   "exports": {
     "Sequencer": { "type": "durable-object", "storage": "sqlite" },
@@ -48,6 +50,22 @@
   ],
   "triggers": { "crons": ["0 */6 * * *"] },
 
+  // The in-browser verifier (M8, dashboard/): static files served by Workers Static Assets at
+  // `/`. Asset requests do not run the Worker; the log and API always do, so no file can shadow
+  // them. The bundle is built before `wrangler dev` and `wrangler deploy`.
+  "assets": {
+    "directory": "../dashboard/public",
+    "not_found_handling": "none",
+    "run_worker_first": ["/log/*", "/api/*"],
+  },
+  // `build.cwd` is resolved against wrangler's working directory, not this file's, so the command
+  // must work from anywhere in the repo; npm finds the workspace root itself. (`watch_dir` is
+  // resolved against this file.)
+  "build": {
+    "command": "npm run build --workspace=@r2notary/dashboard",
+    "watch_dir": "../dashboard/src",
+  },
+
   "vars": {
     "LOG_NAME": "example-log",
     // The log's URL prefix without the scheme or a trailing slash (C2SP tlog-tiles SHOULD):
@@ -66,5 +84,14 @@
     "DEEP_SCRUB_SAMPLE_RATE": "0",
     "DEEP_SCRUB_MAX_BYTES": "104857600",
     "PUBLIC_LOG": "false",
+    // Witnesses (C2SP tlog-witness, M8): a JSON array of {"vkey": "<cosigner vkey>", "url":
+    // "https://<submission prefix>"}. Each checkpoint is submitted to every witness before it is
+    // published, and needs WITNESS_QUORUM cosignatures (0: publish with whatever was collected).
+    "WITNESSES": "[]",
+    "WITNESS_QUORUM": "0",
+    // Key blinding (M8): log HMAC-SHA256(KEY_BLINDING_KEY, key) instead of object keys, so a public
+    // log does not disclose key names. Decide before the first entry: the Sequencer refuses to
+    // change it for an existing log.
+    "KEY_BLINDING": "false",
   },
 }

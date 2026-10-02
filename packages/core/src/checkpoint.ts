@@ -3,7 +3,15 @@
 
 import { fromBase64, toBase64, utf8Encode } from './bytes.ts';
 import { HASH_SIZE } from './merkle.ts';
-import { isValidKeyName, openNote, signNote, type NoteSigner, type NoteVerifier } from './note.ts';
+import {
+  SignatureError,
+  cosignatureTimestamp,
+  isValidKeyName,
+  openNote,
+  signNote,
+  type NoteSigner,
+  type NoteVerifier,
+} from './note.ts';
 
 export const MAX_ORIGIN_BYTES = 255;
 
@@ -106,4 +114,45 @@ export async function openCheckpoint(
     throw new CheckpointError(`checkpoint origin ${cp.origin} is not ${expectedOrigin}`);
   }
   return cp;
+}
+
+/** A witness cosignature that verified, with the time the witness signed it (POSIX seconds). */
+export interface VerifiedCosignature {
+  readonly name: string;
+  readonly keyId: number;
+  readonly timestamp: number;
+}
+
+/**
+ * Like openCheckpoint, and also reports which of `witnesses` cosigned the checkpoint (C2SP
+ * tlog-cosignature), with their timestamps. A cosignature from a supplied witness that does not
+ * verify rejects the note (signed-note rules); one from any other key is ignored. The log's own
+ * signature is still required. How many cosignatures are enough is the caller's policy.
+ */
+export async function openCosignedCheckpoint(
+  note: string | Uint8Array,
+  log: NoteVerifier,
+  expectedOrigin: string,
+  witnesses: readonly NoteVerifier[],
+): Promise<{ checkpoint: Checkpoint; cosignatures: VerifiedCosignature[] }> {
+  const opened = await openNote(note, [log, ...witnesses]);
+  const is = (k: { name: string; keyId: number }, v: NoteVerifier): boolean =>
+    k.name === v.name && k.keyId === v.keyId;
+  if (!opened.verified.some((k) => is(k, log))) {
+    throw new SignatureError(`no valid log signature from ${log.name}`);
+  }
+  const checkpoint = parseCheckpoint(opened.text);
+  if (checkpoint.origin !== expectedOrigin) {
+    throw new CheckpointError(`checkpoint origin ${checkpoint.origin} is not ${expectedOrigin}`);
+  }
+  const cosignatures: VerifiedCosignature[] = [];
+  for (const s of opened.signatures) {
+    if (!witnesses.some((w) => is(s, w))) continue;
+    cosignatures.push({
+      name: s.name,
+      keyId: s.keyId,
+      timestamp: cosignatureTimestamp(s.signature),
+    });
+  }
+  return { checkpoint, cosignatures };
 }

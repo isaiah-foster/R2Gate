@@ -1,3 +1,4 @@
+export * from './blinding.ts';
 export * from './bundle.ts';
 export * from './bytes.ts';
 export * from './canonical.ts';
@@ -9,3 +10,4 @@ export * from './note.ts';
 export * from './paths.ts';
 export * from './proof.ts';
 export * from './tiles.ts';
+export * from './witness.ts';

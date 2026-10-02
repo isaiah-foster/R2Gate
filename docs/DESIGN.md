@@ -180,14 +180,44 @@ compares the bucket with the log's expected state.
 - **Backfill** logs `object.snapshot` entries for objects the log has never named, so a bucket that
   predates the log does not produce one finding per object (D6.10).
 
-## 7. Questions a reviewer will ask
+## 7. Witnesses, key blinding and the browser verifier (M8)
+
+**Witnesses** (C2SP tlog-witness, D8.4-D8.7). A signed checkpoint proves who signed it, not that
+everyone was shown the same one: an operator holding the key can show different readers different
+trees (a split view), and only a reader who compares notes with another notices. A witness is that
+other party, made routine. Before a checkpoint becomes visible, publication submits it to each
+configured witness with a consistency proof from the size the witness last cosigned; the witness
+checks the proof against its own record, cosigns, and stores the new size atomically. Its
+cosignature says "as of time t, this is the largest tree I have seen for this log, and it extends
+everything before it". A reader that requires a quorum of cosignatures from witnesses it trusts
+(`--witness`) therefore cannot be shown a fork unless those witnesses also misbehave. The archived
+checkpoints stay log-signed only, so they remain a pure function of the prefix and the crash
+argument above is unchanged; the live checkpoint carries the cosignatures. Missing the quorum fails
+the publication before the checkpoint moves (entries stay durable), which is the price of requiring
+witnesses. The included witness Worker (`witness/`) is useful only when someone other than the log
+operator runs it.
+
+**Key blinding** (D8.8). A public log names objects by `keyHmac` = HMAC-SHA256(secret, key). The
+Merkle tree, tiles and verification are unchanged: a blinded entry is just different bytes. The
+writer keeps working on real keys (the auditor needs them), which stay in the Sequencer's private
+SQLite; the published log, reports and lookups use HMACs only. Readers with the secret compute the
+HMAC themselves. It hides names, not how often an object changes, its sizes, times or ETags.
+
+**Browser verifier** (D8.3). The page at `/` uses `packages/core` in the browser: it verifies the
+checkpoint (and witness policy), proves each entry it displays and each audit finding, and keeps the
+last verified checkpoint so the next visit proves the log only grew. It shares code with the
+writer, so it is a demonstration rather than an independent check; and a page served by the log's
+own Worker is only as trustworthy as that Worker, which is why the page can be saved and run from
+elsewhere (the log and read API allow cross-origin reads).
+
+## 8. Questions a reviewer will ask
 
 **Isn't a single Durable Object a bottleneck?**
 Yes, by design, and it is measured rather than hidden. One writer gives a total order and
 create-if-absent publication without coordination; sharding the tree would need a coordinator or
 several logs. Locally (`docs/BENCHMARKS.md` §2), one Sequencer sustained about 3,000 entries/s
 however many clients appended, which is what doing appends and publications in turn on one thread
-predicts; with 16 clients, appends crowded out publication (2,045 entries/s published) and the
+predicts; with 16 clients, appends crowded out publication (2,007 entries/s published) and the
 backlog grew until the load stopped. Entries stay durable; only visibility is delayed. Those are
 local workerd figures; on
 Cloudflare every SQLite write waits for replication and every R2 write is a network call, so the
@@ -219,16 +249,27 @@ window, records it as a signed finding, and the next audit reports it again whil
 it cannot see is a change that was undone before the next audit (`docs/THREAT_MODEL.md`).
 
 **Doesn't a public log leak my object keys?**
-Yes. Key names are in every entry. That is why logs are private by default (`PUBLIC_LOG=false`, a
-read token on every non-admin route), why webhooks carry counts and log indexes only, and why
-`/status` error reasons name fields, never values (D3.4). Keyed blinding (HMAC of the key instead of
-the key) is planned (M8) and would let a public log prove history without disclosing names.
+By default, yes: key names are in every entry. That is why logs are private by default
+(`PUBLIC_LOG=false`, a read token on every non-admin route), why webhooks carry counts and log
+indexes only, and why `/status` error reasons name fields, never values (D3.4). With key blinding
+(`KEY_BLINDING`, M8) a public log names objects by HMAC-SHA256 of the key under a secret, so it
+proves history without disclosing names; readers given the secret locate a key's entries. What
+blinding cannot hide is the pattern: how often each (unnamed) object changes, its sizes and times,
+and its ETag, which for a single-part upload is the content's MD5 (D8.8).
+
+**What do witnesses add, if the log is already signed?**
+A signature shows who signed a checkpoint, not that everyone saw the same one. An operator with the
+key could show an auditor one tree and everyone else another. Witnesses cosign a checkpoint only if
+it extends what they saw before, so a reader requiring their cosignatures is shown the same history
+as everyone else, unless the witnesses collude with the operator. That makes who runs them the
+whole question: a witness deployed by the log's operator adds nothing against that operator. The
+log uses the standard protocol so it can use independent witnesses (D8.5, D8.6).
 
 **What does it cost?**
 Measured per-operation counts (`bench/results/amplification.json`) priced at the Workers Paid list
 prices of October 2026 (`bench/results/cost.json`, `docs/BENCHMARKS.md` §7), under a stated
 Poisson-arrival model, at `CHECKPOINT_INTERVAL_MS=5000`: about 25 USD/month at 1M events, 141
-USD/month at 10M and 1,246 USD/month at 100M, before included allowances and excluding Durable
+USD/month at 10M and 1,247 USD/month at 100M, before included allowances and excluding Durable
 Object duration and Workers CPU, which a local run cannot measure. The largest line by far is
 **Durable Object SQLite rows written**: about 11 rows per event at large batches (dedupe record and
 its index, the entry, the expected-state row and its indexes, the key index, pruning), against a few

@@ -9,10 +9,13 @@
   },
   "workspaces": [
     "packages/*",
-    "worker"
+    "worker",
+    "witness",
+    "dashboard"
   ],
   "scripts": {
     "test": "vitest run",
+    "build:dashboard": "npm run build -w @r2notary/dashboard",
     "test:contract:remote": "vitest run --config worker/vitest.remote.config.ts",
     "dev:sim": "wrangler dev -c worker/dev/wrangler.simulator.jsonc -c worker/wrangler.jsonc --persist-to .wrangler/state",
     "simulate": "node scripts/simulate-events.ts",
@@ -36,6 +39,7 @@
     "@cloudflare/workers-types": "5.20261002.1",
     "@eslint/js": "10.0.1",
     "@types/node": "24.19.1",
+    "esbuild": "0.28.1",
     "eslint": "10.12.0",
     "fast-check": "4.10.2",
     "prettier": "3.9.9",

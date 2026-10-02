@@ -1,7 +1,8 @@
-import { parseLogPath } from '@r2notary/core';
+import { parseLogPath, type KeyBlinder } from '@r2notary/core';
 import { READ_ROUTES, admin, readApi, type ApiDeps } from './api.ts';
 import { startScan } from './audit/scan.ts';
 import { hasToken, parseAccess, type Access } from './auth.ts';
+import { loadBlinder } from './blinding.ts';
 import { parseConfig, type Config } from './config.ts';
 import { CORS_HEADERS, methodNotAllowed, notFound, text, unauthorized } from './http.ts';
 import { consumeBatch } from './ingest.ts';
@@ -34,6 +35,18 @@ function getAccess(env: Env): Access {
   return a;
 }
 
+// The key blinder (M8) is loaded once per env too; asynchronous, so the promise is kept.
+const blinders = new WeakMap<Env, Promise<KeyBlinder | null>>();
+function getBlinder(env: Env, cfg: Config): Promise<KeyBlinder | null> {
+  let b = blinders.get(env);
+  if (b === undefined) {
+    b = loadBlinder(cfg, (env as { readonly KEY_BLINDING_KEY?: unknown }).KEY_BLINDING_KEY);
+    b.catch(() => blinders.delete(env));
+    blinders.set(env, b);
+  }
+  return b;
+}
+
 function sequencer(env: Env, cfg: Config): DurableObjectStub<Sequencer> {
   return env.SEQUENCER.getByName(cfg.logName);
 }
@@ -42,6 +55,12 @@ function sequencer(env: Env, cfg: Config): DurableObjectStub<Sequencer> {
 function canRead(request: Request, access: Access): Promise<boolean> {
   if (access.readToken === null) return Promise.resolve(true);
   return hasToken(request, [access.readToken, access.adminToken]);
+}
+
+function withCors(res: Response): Response {
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
+  return new Response(res.body, { status: res.status, headers });
 }
 
 const LOG_PREFIX = '/log/';
@@ -71,11 +90,17 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 
   if (path.startsWith(API_PREFIX)) {
+    // The read API is readable cross-origin, like the log routes, so a browser verifier loaded
+    // from somewhere other than this Worker can use it (M8). Bearer tokens, no cookies: a page on
+    // another origin learns only what the token it was given can read anyway.
     const name = path.slice(API_PREFIX.length);
     if (!READ_ROUTES.includes(name)) return notFound();
-    if (request.method !== 'GET' && request.method !== 'HEAD') return methodNotAllowed('GET, HEAD');
-    if (!(await canRead(request, access))) return unauthorized();
-    return readApi(name, request, url, deps);
+    if (request.method === 'OPTIONS') return preflight();
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return methodNotAllowed('GET, HEAD, OPTIONS', CORS_HEADERS);
+    }
+    if (!(await canRead(request, access))) return unauthorized(CORS_HEADERS);
+    return withCors(await readApi(name, request, url, deps));
   }
 
   const logPrefix = `${LOG_PREFIX}${cfg.logName}/`;
@@ -114,6 +139,7 @@ export default {
     await consumeBatch(batch, {
       config: cfg,
       sink: { ingest: (items, report) => stub.ingest(items, report) },
+      blinder: await getBlinder(env, cfg),
       now: Date.now,
     });
   },

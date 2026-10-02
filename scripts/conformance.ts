@@ -23,6 +23,13 @@
 //      replay a monitor across the archived checkpoints in order. Uncorrupted, every step passes.
 //      With one bit flipped in any tile, bundle or archived checkpoint, or a forged signature,
 //      the replay must stop with exit code 1 (verification failed); a missing resource with 4.
+//   5. M8, together: the witness Worker under its own wrangler dev, and a second log that is
+//      public, blinds key names and needs one witness cosignature per checkpoint. The Go CLI
+//      requires the cosignature (--witness), finds keys by HMACs it computes itself
+//      (--blinding-key-file), and nothing published names a key. The browser verifier
+//      (dashboard/src/verifier.ts) checks the same live log. A flipped cosignature bit is
+//      rejected (exit 1), a missing one is a policy failure (exit 4), and the witness refuses a
+//      forked checkpoint signed with the log's real key (422).
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -37,17 +44,40 @@ import {
   decodeBundle,
   decodeEntry,
   entryBundlePath,
+  formatAddCheckpoint,
   fromBase64,
+  generateCosignerKey,
   generateKey,
+  loggedName,
+  newKeyBlinder,
   newSigner,
   parseCheckpoint,
+  sha256,
   signCheckpoint,
   tilePath,
   toBase64,
+  toHex,
   utf8Decode,
+  utf8Encode,
 } from '../packages/core/src/index.ts';
-import { ROOT, randomToken as token, sleep, startDev, type DevServer } from './lib/dev.ts';
+import {
+  ROOT,
+  randomToken as token,
+  sleep,
+  startDev,
+  startWitness,
+  type DevServer,
+} from './lib/dev.ts';
 import { simulate } from './simulate/events.ts';
+import {
+  UnavailableError,
+  VerifyError,
+  httpSource,
+  openLog,
+  openNoteBytes,
+  proveConsistency,
+  recentEntries,
+} from '../dashboard/src/verifier.ts';
 
 const { values } = parseArgs({
   options: {
@@ -138,6 +168,7 @@ function expectedAlerts(entries: readonly Uint8Array[], prefix: string): number 
     const d = decodeEntry(bytes);
     if (!d.known) continue;
     const e = d.entry;
+    if (e.type === 'audit.scan' || e.key === undefined) continue; // blinded (M8): never watched
     if (e.type === 'object.snapshot' && e.key.startsWith(prefix)) live.add(e.key);
     if (e.type !== 'object.event' || !e.key.startsWith(prefix)) continue;
     if (e.action === 'DeleteObject' || e.action === 'LifecycleDeletion') {
@@ -162,12 +193,15 @@ function printedEntries(stdout: string): Map<number, string> {
 }
 
 let dev = null as DevServer | null;
+let witnessDev = null as DevServer | null;
 // Typed through `as` so TypeScript does not narrow it to null for the finally block below.
 let mirrorServer = null as Server | null;
 
 function stopWrangler(): void {
   dev?.stop();
   dev = null;
+  witnessDev?.stop();
+  witnessDev = null;
 }
 
 async function main(): Promise<void> {
@@ -559,6 +593,290 @@ async function main(): Promise<void> {
   step(
     `${String(flips)} bit flips, ${String(SIZES.length * 2)} forged signatures, ${String(replays)} monitor replays`,
   );
+  mirrorServer.close();
+  mirrorServer = null;
+
+  await m8Stage(go, skey, vkey);
+}
+
+/** Step 5 (M8): witness cosigning, key blinding and the browser verifier, against live Workers. */
+async function m8Stage(
+  go: (args: readonly string[], env?: NodeJS.ProcessEnv) => Promise<Run>,
+  skey: string,
+  vkey: string,
+): Promise<void> {
+  step('M8: starting the witness and a public, blinded, witnessed log');
+  const witnessKey = await generateCosignerKey('witness.example.com/conformance');
+  const otherWitness = await generateCosignerKey('witness.example.com/other');
+  witnessDev = await startWitness({
+    dir: tmp,
+    vars: {
+      WITNESS_KEY: witnessKey.skey,
+      WITNESS_LOGS: JSON.stringify([{ origin: ORIGIN, vkeys: [vkey] }]),
+    },
+  });
+  const blindingKey = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
+  const blindingFile = join(tmp, 'blinding.key');
+  writeFileSync(blindingFile, `${blindingKey}\n`, { mode: 0o600 });
+  const adminToken = token();
+  dev = await startDev({
+    dir: tmp,
+    readToken: token(),
+    persistTo: join(tmp, 'm8-state'),
+    vars: {
+      SIGNING_KEY: skey,
+      ADMIN_TOKEN: adminToken,
+      PUBLIC_LOG: 'true',
+      CHECKPOINT_INTERVAL_MS: '3600000',
+      BATCH_MAX_ENTRIES: '1000',
+      KEY_BLINDING: 'true',
+      KEY_BLINDING_KEY: blindingKey,
+      WITNESSES: JSON.stringify([{ vkey: witnessKey.vkey, url: witnessDev.base }]),
+      WITNESS_QUORUM: '1',
+    },
+  });
+  const base = dev.base;
+  const logUrl = `${base}/log/${LOG_NAME}`;
+  const sizes = [100, 300];
+  const { messages } = simulate({ count: 300, bucket: BUCKET, seed: 8, keys: 40 });
+  let published = 0;
+  for (const size of sizes) {
+    const batch = messages.slice(published, size);
+    for (let i = 0; i < batch.length; i += 100) {
+      await fetch(`${base}/__simulate/send`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(batch.slice(i, i + 100)),
+      });
+    }
+    for (let i = 0; ; i++) {
+      const st = (await (await fetch(`${base}/api/v1/status`)).json()) as { durableSize: number };
+      if (st.durableSize === size) break;
+      if (i > 120) throw new Error(`M8: events for size ${String(size)} were not ingested`);
+      await sleep(500);
+    }
+    const res = await fetch(`${base}/api/v1/admin/publish`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const r = (await res.json()) as { size?: number };
+    check(
+      r.size === size,
+      `M8: publish ${String(size)} with a witness quorum: ${JSON.stringify(r)}`,
+    );
+    published = size;
+  }
+
+  // Key blinding: every published resource, read through the public read path.
+  const files = new Map<string, Uint8Array>();
+  for (const path of new Set([...sizes.flatMap(resourcesAt), CHECKPOINT_PATH])) {
+    const res = await fetch(`${logUrl}/${path}`);
+    if (res.status !== 200) throw new Error(`M8: GET ${path}: HTTP ${String(res.status)}`);
+    files.set(path, new Uint8Array(await res.arrayBuffer()));
+  }
+  const entries: Uint8Array[] = [];
+  for (let n = 0; n * TILE_WIDTH < 300; n++) {
+    const b = files.get(entryBundlePath(n, Math.min(TILE_WIDTH, 300 - n * TILE_WIDTH)));
+    if (b !== undefined) entries.push(...decodeBundle(b));
+  }
+  const blinder = await newKeyBlinder(blindingKey);
+  const keys = [
+    ...new Set(
+      messages.flatMap((m) => {
+        const body = m as { object?: { key?: unknown }; copySource?: { object?: unknown } };
+        return [body.object?.key, body.copySource?.object].filter(
+          (k): k is string => typeof k === 'string',
+        );
+      }),
+    ),
+  ];
+  // Lenient decoding: tiles are binary, and only the text resources can contain a name.
+  const everything = [...files.values()].map((b) => new TextDecoder().decode(b)).join('\n');
+  const leaked = keys.filter(
+    (k) => everything.includes(k) || everything.includes(JSON.stringify(k)),
+  );
+  check(
+    keys.length > 30 && leaked.length === 0,
+    `M8: no key name is published (${leaked.join(', ')})`,
+  );
+  const named = entries.flatMap((e) => {
+    const d = decodeEntry(e);
+    const n = d.known ? loggedName(d.entry) : null;
+    return n === null ? [] : [n];
+  });
+  check(
+    named.length === 300 && named.every((n) => n.blinded),
+    'M8: every entry names its object by keyHmac',
+  );
+  const byHmac = new Map<string, number[]>();
+  named.forEach((n, i) => byHmac.set(n.name, [...(byHmac.get(n.name) ?? []), i]));
+  const lookupPlain = await fetch(`${base}/api/v1/lookup?key=${encodeURIComponent('sim/7')}`);
+  check(lookupPlain.status === 400, 'M8: a blinded log refuses lookups by plaintext key');
+  await lookupPlain.body?.cancel();
+
+  // The Go CLI computes the HMAC itself (Go's crypto/hmac), by scan and through the lookup API.
+  const goFlags = ['--log', logUrl, '--vkey', vkey, '--witness', witnessKey.vkey];
+  for (const key of ['sim/ünïcødé/ファイル', 'sim/"quoted"', 'sim/a|b|c', 'sim/7']) {
+    const want = (byHmac.get(await blinder.blind(key)) ?? []).join(',');
+    check(want !== '', `M8: entries exist for ${key}`);
+    for (const extra of [[], ['--api', base]]) {
+      const r = await go([
+        'inclusion',
+        '--key',
+        key,
+        '--blinding-key-file',
+        blindingFile,
+        ...extra,
+        ...goFlags,
+      ]);
+      const got = [...printedEntries(r.stdout).keys()].join(',');
+      check(
+        r.code === EXIT.ok && got === want,
+        `M8: Go inclusion --key ${key} ${extra.join(' ')}: [${got}] vs [${want}] ${r.stderr.trim()}`,
+      );
+    }
+  }
+  const noKey = await go(['inclusion', '--key', 'sim/7', ...goFlags], {
+    ...process.env,
+    R2NOTARY_BLINDING_KEY: '',
+  });
+  check(
+    noKey.code === EXIT.negative && noKey.stderr.includes('blinds key names'),
+    'M8: without the blinding key the CLI finds nothing and says why',
+  );
+
+  // Witness cosigning, checked by the Go CLI (its own cosignature/v1 implementation).
+  const cp = await go(['checkpoint', ...goFlags]);
+  check(
+    cp.code === EXIT.ok && cp.stdout.includes('cosignature witness.example.com/conformance '),
+    `M8: Go verifies the witness cosignature: ${cp.stderr.trim()}`,
+  );
+  const wrongWitness = await go([
+    'checkpoint',
+    '--log',
+    logUrl,
+    '--vkey',
+    vkey,
+    '--witness',
+    otherWitness.vkey,
+  ]);
+  check(
+    wrongWitness.code === EXIT.error,
+    'M8: a checkpoint without the required cosignature: exit 4',
+  );
+  const mon = await go([
+    'monitor',
+    '--once',
+    '-q',
+    '--state',
+    join(tmp, 'm8-monitor.json'),
+    ...goFlags,
+  ]);
+  check(mon.code === EXIT.ok, `M8: monitor with --witness: ${mon.stderr.trim()}`);
+  const archive100 = join(tmp, 'm8-checkpoint-100');
+  writeFileSync(archive100, files.get(archivedCheckpointPath(100)) ?? new Uint8Array());
+  const cons = await go(['consistency', '--old', archive100, ...goFlags]);
+  check(
+    cons.code === EXIT.ok,
+    `M8: the cosigned checkpoint extends archive 100: ${cons.stderr.trim()}`,
+  );
+
+  // The witness's own record of the log (monitoring endpoint) verifies with the log key.
+  const originHash = toHex(await sha256(utf8Encode(ORIGIN)));
+  const wcp = await fetch(`${witnessDev.base}/${originHash}/checkpoint`);
+  const witnessNote = new Uint8Array(await wcp.arrayBuffer());
+  const witnessFile = join(tmp, 'm8-witness-checkpoint');
+  writeFileSync(witnessFile, witnessNote);
+  const fromWitness = await go([
+    'consistency',
+    '--old',
+    archive100,
+    '--new',
+    witnessFile,
+    ...goFlags,
+  ]);
+  check(
+    wcp.status === 200 && fromWitness.code === EXIT.ok,
+    `M8: the witness's checkpoint verifies and extends 100: ${fromWitness.stderr.trim()}`,
+  );
+
+  // The browser verifier, in Node, against the same live log.
+  const source = httpSource(logUrl, null);
+  const policy = { vkey, witnesses: [witnessKey.vkey], quorum: 1 };
+  const live = await openLog(source, policy);
+  check(
+    live.checkpoint.size === 300 && live.cosignatures.length === 1,
+    'M8: browser verifier opens the cosigned checkpoint',
+  );
+  const recent = await recentEntries(source, live, 300);
+  check(
+    recent.length === 300 &&
+      recent.every((r, i) => Buffer.from(r.entry).equals(Buffer.from(entries[i] ?? []))),
+    'M8: browser verifier proves all 300 entries, byte for byte as published',
+  );
+  const older = await openNoteBytes(files.get(archivedCheckpointPath(100)) ?? new Uint8Array(), {
+    vkey,
+  });
+  await proveConsistency(source, older, live);
+  check(true, 'M8: browser verifier proves 100 -> 300 consistency');
+  const page = await fetch(`${base}/`);
+  check(
+    page.status === 200 &&
+      (page.headers.get('content-security-policy') ?? '').includes("script-src 'self'"),
+    'M8: the dashboard is served with its content security policy',
+  );
+  await page.body?.cancel();
+
+  // A tampered or missing cosignature, served by a mirror.
+  const note = utf8Decode(files.get(CHECKPOINT_PATH) ?? new Uint8Array());
+  const lines = note.split('\n');
+  const wl = lines.findIndex((l) => l.startsWith('— witness.example.com/conformance '));
+  const raw = fromBase64(lines[wl]?.split(' ').at(-1) ?? '');
+  raw[20] = (raw[20] ?? 0) ^ 0x01; // inside the signature, after the key ID and timestamp
+  const flipped = lines
+    .map((l, i) => (i === wl ? `${l.slice(0, l.lastIndexOf(' ') + 1)}${toBase64(raw)}` : l))
+    .join('\n');
+  const stripped = lines.filter((_, i) => i !== wl).join('\n');
+  for (const [what, body, code, err] of [
+    ['a flipped cosignature bit', flipped, EXIT.failure, VerifyError],
+    ['no cosignature', stripped, EXIT.error, UnavailableError],
+  ] as const) {
+    const server = createServer((req, res) => {
+      const path = req.url?.slice(`/log/${LOG_NAME}/`.length) ?? '';
+      const data = path === CHECKPOINT_PATH ? new TextEncoder().encode(body) : files.get(path);
+      if (data === undefined) res.writeHead(404).end();
+      else res.writeHead(200).end(data);
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const addr = server.address();
+    const url = `http://127.0.0.1:${String(typeof addr === 'object' && addr !== null ? addr.port : 0)}/log/${LOG_NAME}`;
+    const r = await go(['checkpoint', '--log', url, '--vkey', vkey, '--witness', witnessKey.vkey]);
+    check(r.code === code, `M8: Go with ${what}: exit ${String(r.code)} ${r.stderr.trim()}`);
+    const b = await openLog(httpSource(url, null), policy).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    check(b instanceof err, `M8: browser verifier with ${what}: ${String(b)}`);
+    server.close();
+  }
+
+  // Split view: a different tree of size 300, signed with the log's real key (an operator showing
+  // some readers another log). The witness has cosigned the real one, so it refuses this one.
+  const forged = await signCheckpoint(
+    { origin: ORIGIN, size: 300, rootHash: new Uint8Array(32).fill(7), extensions: [] },
+    await newSigner(skey),
+  );
+  const fork = await fetch(`${witnessDev.base}/add-checkpoint`, {
+    method: 'POST',
+    body: formatAddCheckpoint({ oldSize: 300, proof: [], checkpoint: forged }),
+  });
+  check(
+    fork.status === 422,
+    `M8: the witness refuses a forked checkpoint (HTTP ${String(fork.status)})`,
+  );
+  await fork.body?.cancel();
+  stopWrangler();
+  step('M8: witness, blinding and browser verifier checks done');
 }
 
 try {

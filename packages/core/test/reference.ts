@@ -61,6 +61,22 @@ export function refConsistencyProof(m: number, leaves: readonly Uint8Array[]): U
   return sub(m, leaves, true);
 }
 
+/**
+ * RFC 6962 §2.1.1 audit path PATH(m, D[n]), straight from the textbook recursion: PATH(0, {d}) =
+ * {}; otherwise split at k and recurse into the half holding m, appending the MTH of the other.
+ */
+export function refInclusionProof(m: number, leaves: readonly Uint8Array[]): Uint8Array[] {
+  const path = (m: number, d: readonly Uint8Array[]): Uint8Array[] => {
+    const n = d.length;
+    if (n <= 1) return [];
+    const k = splitPoint(n);
+    if (m < k) return [...path(m, d.slice(0, k)), refRootFromLeafHashes(d.slice(k))];
+    return [...path(m - k, d.slice(k)), refRootFromLeafHashes(d.slice(0, k))];
+  };
+  if (m < 0 || m >= leaves.length) throw new RangeError('index outside the tree');
+  return path(m, leaves);
+}
+
 export function refRoot(entries: readonly Uint8Array[]): Uint8Array {
   return refRootFromLeafHashes(entries.map(refLeafHash));
 }

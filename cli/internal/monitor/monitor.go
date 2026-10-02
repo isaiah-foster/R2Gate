@@ -21,6 +21,10 @@ import (
 	"github.com/isaiahfoster/r2notary/cli/internal/verify"
 )
 
+// ErrWatchBlinded: the log blinds key names (keyHmac, M8), so no prefix can be matched. Failing is
+// better than watching silently and never alerting.
+var ErrWatchBlinded = errors.New("this log blinds key names (keyHmac): --watch cannot match a prefix")
+
 // State is what a monitor persists between polls.
 type State struct {
 	// Checkpoint is the signed note of the last checkpoint whose entries were all verified.
@@ -101,6 +105,9 @@ func (m *Monitor) Poll(ctx context.Context, prev *State) (*State, *Result, error
 			return nil
 		}
 		info := entry.Parse(e)
+		if info.HasKeyHmac {
+			return ErrWatchBlinded
+		}
 		if !info.HasKey || !strings.HasPrefix(info.Key, *m.Watch) {
 			return nil
 		}
