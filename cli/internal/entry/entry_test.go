@@ -54,4 +54,7 @@ func TestLine(t *testing.T) {
 	if got := string(Line(8, []byte("\xff{"))); got != `{"index":8,"entry":"�{"}` {
 		t.Errorf("invalid: %s", got)
 	}
+	if got := string(Line(9, []byte("\xff\xfe{"))); got != `{"index":9,"entry":"��{"}` {
+		t.Errorf("one U+FFFD per invalid byte: %s", got)
+	}
 }

@@ -324,7 +324,9 @@ describe('a full audit', () => {
 describe('resumability (kill and resume mid-scan)', () => {
   // Learn the step sequence of an uninterrupted run, then crash at every step, before and after
   // its body, and require the same log as the uninterrupted run: nothing lost, nothing twice.
-  it('produces the same log whichever step is killed', async () => {
+  // Slow (one full scan per kill point): it exceeded vitest's default 5 s timeout on GitHub
+  // Actions runners (D8.17). Not a performance test.
+  it('produces the same log whichever step is killed', { timeout: 60_000 }, async () => {
     const reference = new ReplayStep();
     let stub = newSequencer();
     const expected = await seedScenario(stub);

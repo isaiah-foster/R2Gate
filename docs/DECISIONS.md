@@ -1561,3 +1561,34 @@ single sequencer (D7.8). Revisit with a measured need.
 - A witness's `evidence` is readable only through the Durable Object, not over HTTP.
 - The browser verifier shares `packages/core` with the writer; an independent browser verifier
   (or running a third-party tlog client in conformance) was not attempted.
+
+### D8.17 First CI runs on GitHub: two environment-dependent failures
+
+- **CI has now been observed** (closes D0.8, D5.8, D7.12). Since M5, the `go` job failed on every
+  push. The `ts` job failed in 6 of 8 runs from M6 on, and passed on M8's tree only once. The
+  `conformance` job passed every time. The logs were read through the public GitHub REST API (runs,
+  jobs, check-run annotations); raw job logs need authentication. vitest failures appear in the
+  annotations; Go test failures do not, so the Go failure was reproduced locally.
+- **`go`: an output that depended on the Go version.** `entry.Line` embeds a non-JSON entry as a
+  JSON string through `json.Marshal`, and `TestLine` pinned the result for invalid UTF-8. CI
+  installs Go 1.26.0 (the `go` line of `cli/go.mod`, D0.6), whose encoder writes `�`. Local
+  development used Go 1.27.1, which turns on the `encoding/json` v2 implementation by default and
+  writes a literal U+FFFD. The same entry was printed as different bytes depending on which Go built
+  the CLI. Reproduced with `GOTOOLCHAIN=go1.26.0 go test ./...`. **Fix:** `Line` replaces each
+  invalid byte with U+FFFD itself (`[]rune` conversion) before marshaling, so both versions print
+  the same bytes; a new case pins one U+FFFD per invalid byte, as both encoders do
+  (`strings.ToValidUTF8` would merge a run into one and fails it). Entries that are valid JSON, the
+  only kind the TS writer produces and conformance compares, are unaffected. **Rejected:**
+  comparing decoded JSON in the test (the CLI's output would still vary by toolchain); a
+  `toolchain go1.27` line in `go.mod` (hides it while the module still claims Go 1.26 support).
+- **`ts`: two heavy tests over vitest's default 5 s timeout.** Every failing run timed out in
+  `audit-scan.test.ts` "produces the same log whichever step is killed" (one full scan per kill
+  point); one also timed out in the 70,000-leaf worked example in `tiles.test.ts`. Locally they took
+  1.4-3.2 s and 2.5-3.6 s; pinning vitest to 2 or 4 CPUs or capping it at a 200% CPU quota did not
+  reproduce a timeout, so the GitHub runners are slower than those limits suggest. **Fix:** a
+  per-test `timeout: 60_000`, as M7 did for the I1 test. **Rejected for now:** a project-level
+  `testTimeout`, which also delays the report of a genuine hang in every other test; switch to it if
+  a third test times out. Next in line locally: `publish.test.ts` "handles a partial bundle bigger
+  than the 2 MB SQLite row limit" (1.4-2.5 s).
+- Whether the timeouts are fixed is confirmed only by several green `ts` runs, since the failure
+  was intermittent.

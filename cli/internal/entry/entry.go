@@ -104,7 +104,10 @@ func (i Info) IsSnapshot() bool {
 // output contains exactly the bytes the log committed to. Anything else is embedded as a string.
 func Line(index int64, b []byte) []byte {
 	if !json.Valid(b) || bytes.ContainsAny(b, "\n\r") {
-		b, _ = json.Marshal(string(b))
+		// Converting through []rune replaces each invalid UTF-8 byte with U+FFFD, as encoding/json
+		// does, so the output does not depend on the Go version: since Go 1.27 the encoder writes
+		// U+FFFD itself, earlier versions the escape �.
+		b, _ = json.Marshal(string([]rune(string(b))))
 	}
 	out := fmt.Appendf(nil, `{"index":%d,"entry":`, index)
 	out = append(out, b...)

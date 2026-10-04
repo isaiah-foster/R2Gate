@@ -100,6 +100,8 @@ BENCHMARKS, OPERATIONS, DEMO). See PLAN §4 for the full target layout.
   conformance harness passes secrets with `wrangler dev --env-file`, which reaches only the first
   `-c` config: later ones read the `.dev.vars` beside them, so the launcher runs copies of the
   configs from its temp dir (D8.14). Process env is merged too, so it strips config keys (D5.7).
+  CI runs Go 1.26.0 (from go.mod) and Node 22. Go ≥ 1.27 defaults to encoding/json v2, whose output
+  differs for invalid UTF-8, so also run `GOTOOLCHAIN=go1.26.0 go test ./...` (D8.17).
 - Auditor (M6): scan state lives in the Sequencer (`worker/src/audit/store.ts`); each step is one
   synchronous transaction and is idempotent by page number / state, so a re-run step does nothing
   twice. The Workflow (`audit/scan.ts`) only drives it; keep control flow a function of step

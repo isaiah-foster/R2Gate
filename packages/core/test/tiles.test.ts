@@ -105,26 +105,34 @@ describe('tile math', () => {
 });
 
 describe('tile builder', () => {
-  it('produces the worked-example tiles for 70,000 leaves, each matching the spec definition', async () => {
-    const leaves = syntheticLeafHashes(70_000);
-    const { state, fullTiles } = await extendTree(EMPTY_TREE, leaves);
-    expect(state.size).toBe(70_000);
+  // Slow (70,000 leaves, every tile checked against the spec): it exceeded vitest's default 5 s
+  // timeout once on a GitHub Actions runner (D8.17). Not a performance test.
+  it(
+    'produces the worked-example tiles for 70,000 leaves, each matching the spec definition',
+    {
+      timeout: 60_000,
+    },
+    async () => {
+      const leaves = syntheticLeafHashes(70_000);
+      const { state, fullTiles } = await extendTree(EMPTY_TREE, leaves);
+      expect(state.size).toBe(70_000);
 
-    const parts = partialTiles(state);
-    expect(parts.map(key)).toEqual(['0/273/112', '1/1/17', '2/0/1']);
-    expect(fullTiles.filter((t) => t.level === 0)).toHaveLength(273);
-    expect(fullTiles.filter((t) => t.level === 1).map(key)).toEqual(['1/0/256']);
-    expect(fullTiles.filter((t) => t.level > 1)).toEqual([]);
+      const parts = partialTiles(state);
+      expect(parts.map(key)).toEqual(['0/273/112', '1/1/17', '2/0/1']);
+      expect(fullTiles.filter((t) => t.level === 0)).toHaveLength(273);
+      expect(fullTiles.filter((t) => t.level === 1).map(key)).toEqual(['1/0/256']);
+      expect(fullTiles.filter((t) => t.level > 1)).toEqual([]);
 
-    // Emitted tiles are exactly the coordinates the tile math predicts.
-    expect([...fullTiles, ...parts].map(key).sort()).toEqual(
-      tilesForTreeSize(70_000).map(key).sort(),
-    );
-    for (const t of fullTiles) expect(t.data.length).toBe(FULL_TILE_BYTES);
-    for (const t of [...fullTiles, ...parts]) expectTileMatchesSpec(t, leaves);
+      // Emitted tiles are exactly the coordinates the tile math predicts.
+      expect([...fullTiles, ...parts].map(key).sort()).toEqual(
+        tilesForTreeSize(70_000).map(key).sort(),
+      );
+      for (const t of fullTiles) expect(t.data.length).toBe(FULL_TILE_BYTES);
+      for (const t of [...fullTiles, ...parts]) expectTileMatchesSpec(t, leaves);
 
-    expect(hex(await treeRoot(state))).toBe(hex(refRootFromLeafHashes(leaves)));
-  });
+      expect(hex(await treeRoot(state))).toBe(hex(refRootFromLeafHashes(leaves)));
+    },
+  );
 
   // I1: the published root equals the naive recursive MTH, including at tile boundaries.
   // Slow (several 65k-leaf trees and their naive roots): it sometimes exceeded vitest's default 5 s
