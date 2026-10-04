@@ -2,11 +2,12 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
   pull_request:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   ts:
